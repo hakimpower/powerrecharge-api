@@ -104,7 +104,7 @@ var server = http.createServer(function(req, res) {
 
   if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, {'Content-Type': 'application/json'});
-    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '6.1'}));
+    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '6.2'}));
     return;
   }
 
@@ -121,18 +121,23 @@ var server = http.createServer(function(req, res) {
       // Nouveau prospect depuis le formulaire
       // ═══════════════════════════════════════
       if (topic === 'company.created' || topic === 'company.updated') {
-        // Log toutes les donnees pour voir ce qu'Axonaut envoie
         console.log('Company data complet:', JSON.stringify(data).slice(0, 1000));
-        var cp = data.zipcode || data.zip_code || data.postal_code
-              || data.billing_zipcode || data.main_address_zipcode || '';
-        var tel = data.phone || data.mobile || data.telephone
-               || data.billing_phone || data.main_phone || '';
-        var email = data.email || data.billing_email || data.main_email || '';
-        var adresse = data.address || data.address_line1 || data.street
-                   || data.billing_address || data.main_address || '';
-        var ville = data.city || data.ville || data.billing_city || data.main_city || '';
+        // Extraire le contact principal depuis employees[]
+        var employees = data.employees || [];
+        var mainContact = employees.length > 0 ? employees[0] : {};
+        // Nom : company name ou prenom+nom du contact
+        var clientName = data.name || '';
+        if (!clientName && mainContact.firstname) {
+          clientName = (mainContact.firstname + ' ' + (mainContact.lastname || '')).trim();
+        }
+        var cp      = data.address_zip_code  || data.zipcode    || data.zip_code    || '';
+        var tel     = mainContact.phone_number || mainContact.cellphone_number
+                   || mainContact.mobile      || data.phone      || '';
+        var email   = mainContact.email       || data.email      || '';
+        var adresse = data.address_street     || data.address    || data.street      || '';
+        var ville   = data.address_city       || data.city       || data.ville       || '';
         var prospect = {
-          client:      data.name || '',
+          client:      clientName || data.name || '',
           tel:         tel,
           email:       email,
           adresse:     adresse,
