@@ -51,7 +51,7 @@ function isDevisSigne(body, quotation) {
   // Topic de reponse client = signature
   if (topic.includes('customeranswer') || topic.includes('customer_answer')) return true;
 
-  // Statut accepte/signe
+  // Statut accepte/signe (meme si topic est juste quotation.updated)
   if (statut === 'accepted' || statut === 'signed' || statut === 'won' ||
       statut === 'command'  || statut === 'commande') return true;
 
@@ -75,7 +75,7 @@ var server = http.createServer(function(req, res) {
 
   if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, {'Content-Type': 'application/json'});
-    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '5.1'}));
+    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '5.2'}));
     return;
   }
 
@@ -152,6 +152,22 @@ var server = http.createServer(function(req, res) {
           sigStr = sigDate.slice(0, 10);
         }
 
+        // Nettoyer le HTML des champs texte
+        function stripHtml(str) {
+          if (!str) return '';
+          return String(str).replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').trim();
+        }
+
+        // Extraire le numero de devis proprement
+        var devisNum = quotation.number || '';
+        var borneTxt = stripHtml(quotation.title || quotation.subject || '');
+        // Si le titre commence par le numero de devis, l'enlever
+        if (borneTxt.startsWith(devisNum)) {
+          borneTxt = borneTxt.slice(devisNum.length).trim();
+        }
+        // Si la borne est vide apres nettoyage, mettre une valeur par defaut
+        if (!borneTxt || borneTxt.length < 2) borneTxt = 'Borne a definir';
+
         var dossier = {
           client:      c.name || companyName || 'Client Axonaut',
           tel:         c.phone || c.mobile || c.telephone || '',
@@ -160,12 +176,12 @@ var server = http.createServer(function(req, res) {
           ville:       c.city || c.ville || '',
           cp:          String(cp),
           dept:        cp ? String(cp).slice(0, 2) : '',
-          borne:       quotation.title || quotation.subject || '',
+          borne:       borneTxt,
           montant:     Number(quotation.total_amount || quotation.total_without_taxes || quotation.pre_tax_amount || 0),
-          ref:         'AX-' + (quotation.number || quotation.id || Date.now()),
+          ref:         'AX-' + (devisNum || quotation.id || Date.now()),
           commercial:  String(quotation.user_id || ''),
           datesign:    sigStr || new Date().toLocaleDateString('fr-FR'),
-          commentaire: quotation.comments || quotation.comment || '',
+          commentaire: stripHtml(quotation.comments || quotation.comment || ''),
           statut:      'new',
           installateur: null,
           rdv:          null,
