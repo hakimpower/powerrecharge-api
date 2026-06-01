@@ -104,7 +104,7 @@ var server = http.createServer(function(req, res) {
 
   if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, {'Content-Type': 'application/json'});
-    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '6.3'}));
+    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '6.4'}));
     return;
   }
 
@@ -345,6 +345,82 @@ var server = http.createServer(function(req, res) {
 
     }).catch(function(err) {
       console.error('Erreur:', err.message);
+      res.writeHead(200, {'Content-Type': 'application/json'});
+      res.end(JSON.stringify({success: false, error: err.message}));
+    });
+    return;
+  }
+
+
+  // ═══════════════════════════════════════
+  // ROUTE: /formulaire-webhook
+  // Reçoit les données du formulaire WordPress directement
+  // ═══════════════════════════════════════
+  if (req.url === '/formulaire-webhook' && req.method === 'POST') {
+    parseBody(req).then(function(body) {
+      console.log('Formulaire recu:', JSON.stringify(body).slice(0, 500));
+
+      var cp = body.code_postal || body.cp || '';
+      var dossier = {
+        client:      body.nom_prenom    || body.client || body.name || '',
+        tel:         body.telephone     || body.tel    || body.phone || '',
+        email:       body.email         || body.mail   || '',
+        adresse:     body.adresse       || body.address || '',
+        ville:       body.ville         || body.city   || '',
+        cp:          String(cp),
+        dept:        cp ? String(cp).slice(0, 2) : '',
+        borne:       body.borne         || body.type_borne || '',
+        type_logement: body.type_logement || '',
+        distance:    body.distance      || '',
+        gestion:     body.gestion_dynamique || '',
+        commentaire: body.remarques     || body.comment || '',
+        montant:     0,
+        ref:         'FORM-' + Date.now(),
+        commercial:  'Formulaire web',
+        datesign:    '',
+        statut:      'prospect',
+        installateur: null,
+        rdv:          null,
+        notes:        '',
+        imported:     false,
+        createdAt:    new Date().toISOString(),
+        updatedAt:    new Date().toISOString()
+      };
+
+      console.log('Prospect formulaire:', dossier.client, '|', dossier.ville, '|', dossier.tel);
+
+      // Verifier si prospect existe deja par email
+      return findDossierByEmail(dossier.email).then(function(existing) {
+        if (existing) {
+          // Mettre a jour avec les nouvelles infos
+          return firebasePatch('/commandes_axonaut/' + existing.key + '.json', {
+            tel:     dossier.tel,
+            adresse: dossier.adresse,
+            ville:   dossier.ville,
+            cp:      dossier.cp,
+            dept:    dossier.dept,
+            borne:   dossier.borne,
+            type_logement: dossier.type_logement,
+            distance:      dossier.distance,
+            gestion:       dossier.gestion,
+            commentaire:   dossier.commentaire,
+            updatedAt:     new Date().toISOString()
+          }).then(function() {
+            console.log('Prospect mis a jour depuis formulaire:', dossier.client);
+            res.writeHead(200, {'Content-Type': 'application/json'});
+            res.end(JSON.stringify({success: true, action: 'updated'}));
+          });
+        } else {
+          // Creer nouveau prospect
+          return firebasePost('/commandes_axonaut.json', dossier).then(function() {
+            console.log('Prospect cree depuis formulaire:', dossier.client);
+            res.writeHead(200, {'Content-Type': 'application/json'});
+            res.end(JSON.stringify({success: true, action: 'created'}));
+          });
+        }
+      });
+    }).catch(function(err) {
+      console.error('Erreur formulaire:', err.message);
       res.writeHead(200, {'Content-Type': 'application/json'});
       res.end(JSON.stringify({success: false, error: err.message}));
     });
