@@ -104,7 +104,7 @@ var server = http.createServer(function(req, res) {
 
   if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, {'Content-Type': 'application/json'});
-    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '6.0'}));
+    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '6.1'}));
     return;
   }
 
@@ -121,13 +121,22 @@ var server = http.createServer(function(req, res) {
       // Nouveau prospect depuis le formulaire
       // ═══════════════════════════════════════
       if (topic === 'company.created' || topic === 'company.updated') {
-        var cp = data.zipcode || data.zip_code || data.postal_code || '';
+        // Log toutes les donnees pour voir ce qu'Axonaut envoie
+        console.log('Company data complet:', JSON.stringify(data).slice(0, 1000));
+        var cp = data.zipcode || data.zip_code || data.postal_code
+              || data.billing_zipcode || data.main_address_zipcode || '';
+        var tel = data.phone || data.mobile || data.telephone
+               || data.billing_phone || data.main_phone || '';
+        var email = data.email || data.billing_email || data.main_email || '';
+        var adresse = data.address || data.address_line1 || data.street
+                   || data.billing_address || data.main_address || '';
+        var ville = data.city || data.ville || data.billing_city || data.main_city || '';
         var prospect = {
           client:      data.name || '',
-          tel:         data.phone || data.mobile || data.telephone || '',
-          email:       data.email || '',
-          adresse:     data.address || data.address_line1 || data.street || '',
-          ville:       data.city || data.ville || '',
+          tel:         tel,
+          email:       email,
+          adresse:     adresse,
+          ville:       ville,
           cp:          String(cp),
           dept:        cp ? String(cp).slice(0, 2) : '',
           borne:       '',
@@ -202,7 +211,7 @@ var server = http.createServer(function(req, res) {
             return firebasePatch('/commandes_axonaut/' + existing.key + '.json', {
               borne:     borneTxt,
               ref:       'AX-' + devisNum,
-              statut:    'devis_envoye',
+              statut:    'prospect',
               montant:   Number(data.pre_tax_amount || data.total_amount || 0),
               updatedAt: new Date().toISOString()
             }).then(function() {
@@ -226,7 +235,7 @@ var server = http.createServer(function(req, res) {
               commercial:  String(data.user_id || ''),
               datesign:    '',
               commentaire: stripHtml(data.comments || ''),
-              statut:      'devis_envoye',
+              statut:      'prospect',
               installateur: null,
               rdv:          null,
               notes:        '',
