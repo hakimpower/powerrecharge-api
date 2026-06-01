@@ -104,7 +104,7 @@ var server = http.createServer(function(req, res) {
 
   if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, {'Content-Type': 'application/json'});
-    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '6.2'}));
+    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '6.3'}));
     return;
   }
 
@@ -121,6 +121,14 @@ var server = http.createServer(function(req, res) {
       // Nouveau prospect depuis le formulaire
       // ═══════════════════════════════════════
       if (topic === 'company.created' || topic === 'company.updated') {
+        // Ignorer company.created car employees[] est vide a ce stade
+        // Seulement traiter company.updated qui contient toutes les infos
+        if (topic === 'company.created' && (!data.employees || data.employees.length === 0)) {
+          console.log('company.created sans employees - on attend company.updated');
+          res.writeHead(200);
+          res.end(JSON.stringify({success: true, message: 'En attente company.updated'}));
+          return;
+        }
         console.log('Company data complet:', JSON.stringify(data).slice(0, 1000));
         // Extraire le contact principal depuis employees[]
         var employees = data.employees || [];
@@ -131,8 +139,9 @@ var server = http.createServer(function(req, res) {
           clientName = (mainContact.firstname + ' ' + (mainContact.lastname || '')).trim();
         }
         var cp      = data.address_zip_code  || data.zipcode    || data.zip_code    || '';
-        var tel     = mainContact.phone_number || mainContact.cellphone_number
-                   || mainContact.mobile      || data.phone      || '';
+        var tel     = mainContact.cellphone_number || mainContact.phone_number
+                   || mainContact.mobile || data.phone || '';
+        console.log('Contact trouve:', mainContact.firstname, mainContact.email, tel);
         var email   = mainContact.email       || data.email      || '';
         var adresse = data.address_street     || data.address    || data.street      || '';
         var ville   = data.address_city       || data.city       || data.ville       || '';
@@ -148,7 +157,7 @@ var server = http.createServer(function(req, res) {
           montant:     0,
           ref:         'PROSPECT-' + data.id,
           axonautId:   String(data.id || ''),
-          statut:      'prospect',
+          statut:      'prospect', // Toujours prospect pour company.created/updated
           installateur: null,
           rdv:          null,
           notes:        '',
@@ -240,7 +249,7 @@ var server = http.createServer(function(req, res) {
               commercial:  String(data.user_id || ''),
               datesign:    '',
               commentaire: stripHtml(data.comments || ''),
-              statut:      'prospect',
+              statut:      'prospect', // Toujours prospect pour company.created/updated
               installateur: null,
               rdv:          null,
               notes:        '',
