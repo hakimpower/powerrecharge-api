@@ -75,7 +75,7 @@ var server = http.createServer(function(req, res) {
 
   if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, {'Content-Type': 'application/json'});
-    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '5.0'}));
+    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '5.1'}));
     return;
   }
 
@@ -129,8 +129,19 @@ var server = http.createServer(function(req, res) {
       fetchCompany.then(function(companyData) {
         console.log('Entreprise Axonaut:', JSON.stringify(companyData).slice(0, 400));
 
-        var c  = companyData || {};
-        var cp = c.zipcode || c.zip_code || c.postal_code || body.cp || '';
+        // Priorite : 1) API Axonaut, 2) body.data.company, 3) body.company
+        var apiData   = (companyData && companyData.name) ? companyData : {};
+        var bodyComp  = quotation.company || body.company || {};
+        var c = {
+          name:      apiData.name      || bodyComp.name      || companyName || '',
+          phone:     apiData.phone     || apiData.mobile     || bodyComp.phone  || bodyComp.mobile  || bodyComp.tel || '',
+          email:     apiData.email     || bodyComp.email     || '',
+          address:   apiData.address   || apiData.address_line1 || bodyComp.address || bodyComp.adresse || '',
+          city:      apiData.city      || apiData.ville      || bodyComp.city   || bodyComp.ville   || '',
+          zipcode:   apiData.zipcode   || apiData.zip_code   || bodyComp.zipcode || bodyComp.cp || ''
+        };
+        var cp = c.zipcode || body.cp || '';
+        console.log('Infos client fusionnees:', c.name, '|', c.city, '|', c.phone, '|', c.email);
 
         // Extraire signature date
         var sigDate = quotation.electronic_signature_date;
