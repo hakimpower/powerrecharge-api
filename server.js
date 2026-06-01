@@ -1,33 +1,9 @@
 const https = require('https');
 const http  = require('http');
 
-const AXONAUT_KEY  = '619080bd85898f22780e9d463e107e8ac30647619080';
 const FIREBASE_URL = 'powerrecharge-admin-default-rtdb.europe-west1.firebasedatabase.app';
 const FIREBASE_KEY = 'AIzaSyAIUZttIylRrTBb3BuQsMVJzYgIqu35hc4';
 const PORT         = process.env.PORT || 3000;
-
-// ═══ HELPERS ═══
-function apiGet(hostname, path, headers) {
-  return new Promise(function(resolve, reject) {
-    var options = {
-      hostname: hostname,
-      path: path,
-      method: 'GET',
-      headers: headers || {}
-    };
-    var req = https.request(options, function(res) {
-      var data = '';
-      res.on('data', function(c){ data += c; });
-      res.on('end', function(){
-        try { resolve(JSON.parse(data)); }
-        catch(e) { resolve({}); }
-      });
-    });
-    req.on('error', function(e){ reject(e); });
-    req.setTimeout(10000, function(){ req.destroy(); reject(new Error('timeout')); });
-    req.end();
-  });
-}
 
 function firebasePost(path, data) {
   return new Promise(function(resolve, reject) {
@@ -63,130 +39,130 @@ function parseBody(req) {
   });
 }
 
-// ═══ SERVER ═══
+// Verifier si le devis est signe
+function isDevisSigne(body) {
+  var statut = (body.status || body.statut || body.state || '').toLowerCase();
+  var signed  = body.signed_at || body.signature_date || body.electronic_signature_date || body.date_signature;
+  
+  // Accepter si statut contient "sign" ou "accept" ou "command" ou "valid"
+  if (statut && (
+    statut.includes('sign') ||
+    statut.includes('accept') ||
+    statut.includes('command') ||
+    statut.includes('valid') ||
+    statut.includes('won')
+  )) return true;
+  
+  // Accepter si une date de signature existe
+  if (signed) return true;
+  
+  // Accepter si envoye depuis Zapier (deja filtre par Zapier)
+  if (body.from_zapier) return true;
+  
+  return false;
+}
+
 var server = http.createServer(function(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return; }
 
-  // Health check
   if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, {'Content-Type': 'application/json'});
-    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '3.0'}));
+    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '4.0'}));
     return;
   }
 
-  // ═══ WEBHOOK PRINCIPAL ═══
   if (req.url === '/axonaut-webhook' && req.method === 'POST') {
     parseBody(req).then(function(body) {
-      console.log('Webhook recu:', JSON.stringify(body).slice(0, 500));
+      console.log('Webhook recu:', JSON.stringify(body).slice(0, 800));
 
-      var quotationId = body.id || body.quotation_id;
-      var projectId   = body.project_id || body.id_projet;
-
-      // Appels paralleles : devis + entreprise si on a les IDs
-      var promises = [];
-
-      // 1. Recuperer le devis
-      if (quotationId) {
-        promises.push(
-          apiGet('app.axonaut.com', '/api/v1/quotations/' + quotationId, {'apiKey': AXONAUT_KEY})
-          .catch(function(){ return {}; })
-        );
-      } else {
-        promises.push(Promise.resolve({}));
+      // Verifier si devis signe (sauf si test)
+      if (!body.test && !isDevisSigne(body)) {
+        console.log('Devis non signe - ignore. Statut:', body.status || body.statut);
+        res.writeHead(200, {'Content-Type': 'application/json'});
+        res.end(JSON.stringify({success: true, message: 'Devis non signe - ignore'}));
+        return;
       }
 
-      // 2. Recuperer le projet/client si on a l'ID projet
-      if (projectId) {
-        promises.push(
-          apiGet('app.axonaut.com', '/api/v1/projects/' + projectId, {'apiKey': AXONAUT_KEY})
-          .catch(function(){ return {}; })
-        );
-      } else {
-        promises.push(Promise.resolve({}));
-      }
+      // Extraire les infos client depuis toutes les sources possibles
+      var company  = body.company  || body.customer || body.client || body.entreprise || {};
+      var contact  = body.contact  || body.interlocutor || {};
+      var billing  = body.billing_address || body.adresse_facturation || {};
+      var quotation = body.quotation || body;
 
-      return Promise.all(promises).then(function(results) {
-        var quotation = results[0] || {};
-        var project   = results[1] || {};
+      if (typeof company === 'string') company = {name: company};
+      if (typeof contact === 'string') contact = {name: contact};
 
-        console.log('Devis:', JSON.stringify(quotation).slice(0,300));
-        console.log('Projet:', JSON.stringify(project).slice(0,300));
+      var cp = company.zipcode || company.zip || company.postal_code || company.code_postal
+            || billing.zipcode || billing.zip || body.cp || body.zipcode || '';
 
-        // Chercher les infos client dans toutes les sources
-        var company = quotation.company || quotation.customer || quotation.client
-                   || project.company  || project.customer  || project.client || {};
-        var contact = quotation.contact || project.contact || {};
-        var address = company.address  || {};
+      var dossier = {
+        // Infos client
+        client:   company.name || company.nom
+               || (contact.firstname && contact.lastname ? contact.firstname + ' ' + contact.lastname : '')
+               || contact.name || contact.nom
+               || body.client || body.company_name || body.customer_name
+               || quotation.title || 'Client Axonaut',
 
-        // Si company est une string, la mettre dans name
-        if (typeof company === 'string') { company = {name: company}; }
+        tel:      company.phone || company.telephone || company.mobile || company.tel
+               || contact.phone || contact.telephone || contact.mobile
+               || body.tel || body.phone || body.telephone || '',
 
-        // Recuperer l'ID entreprise pour un 3eme appel si necessaire
-        var companyId = quotation.company_id || quotation.customer_id
-                     || project.company_id   || body.company_id;
+        email:    company.email || contact.email
+               || body.email || body.mail || '',
 
-        var fetchCompany = companyId
-          ? apiGet('app.axonaut.com', '/api/v1/companies/' + companyId, {'apiKey': AXONAUT_KEY}).catch(function(){ return {}; })
-          : Promise.resolve({});
+        adresse:  company.address || company.adresse || company.address_line1
+               || company.rue || billing.address || billing.street
+               || body.adresse || body.address || '',
 
-        return fetchCompany.then(function(companyData) {
-          console.log('Entreprise:', JSON.stringify(companyData).slice(0,300));
+        ville:    company.city || company.ville
+               || billing.city || billing.ville
+               || body.ville || body.city || '',
 
-          // Fusionner toutes les sources
-          var c = companyData || {};
-          var cp = c.zipcode || c.zip_code || c.postal_code
-                || company.zipcode || company.zip_code
-                || body.cp || body.zipcode || '';
+        cp:       String(cp),
+        dept:     cp ? String(cp).slice(0, 2) : '',
 
-          var dossier = {
-            client:      c.name || company.name
-                      || (contact.firstname + ' ' + contact.lastname).trim()
-                      || body.client || quotation.title || 'Client Axonaut',
-            tel:         c.phone || c.mobile || c.telephone
-                      || company.phone || company.mobile
-                      || contact.phone || contact.mobile
-                      || body.tel || '',
-            email:       c.email || company.email || contact.email
-                      || body.email || '',
-            adresse:     c.address || c.address_line1 || c.street
-                      || company.address || body.adresse || '',
-            ville:       c.city || c.ville || company.city
-                      || body.ville || '',
-            cp:          String(cp),
-            dept:        cp ? String(cp).slice(0, 2) : '',
-            borne:       quotation.title || quotation.subject || quotation.name
-                      || body.borne || '',
-            montant:     Number(quotation.total_without_taxes || quotation.amount_ht
-                      || quotation.total || body.montant || 0),
-            ref:         'AX-' + (quotationId || body.ref || Date.now()),
-            commercial:  (quotation.user && (quotation.user.name || quotation.user.firstname + ' ' + quotation.user.lastname))
-                      || body.commercial || '',
-            datesign:    quotation.signed_at || quotation.validated_at
-                      || body.datesign || new Date().toLocaleDateString('fr-FR'),
-            commentaire: quotation.comment || quotation.notes || quotation.description
-                      || body.commentaire || '',
-            statut:      'new',
-            installateur: null,
-            rdv:          null,
-            notes:        '',
-            imported:     false,
-            createdAt:    new Date().toISOString()
-          };
+        // Infos devis
+        borne:    quotation.title || quotation.subject || quotation.name
+               || body.borne || body.title || '',
 
-          console.log('Dossier final:', dossier.client, dossier.ville, dossier.tel);
-          return firebasePost('/commandes_axonaut.json', dossier);
-        });
+        montant:  Number(quotation.total_without_taxes || quotation.montant_ht
+               || quotation.amount_ht || quotation.total
+               || body.montant || body.amount || body.total || 0),
+
+        ref:      body.ref || ('AX-' + (body.id || quotation.id || Date.now())),
+
+        commercial: (quotation.user && quotation.user.name)
+                 || body.commercial || body.user_name || body.salesperson || '',
+
+        datesign: body.datesign || body.signed_at || body.signature_date
+               || body.electronic_signature_date || body.date_signature
+               || new Date().toLocaleDateString('fr-FR'),
+
+        commentaire: quotation.comment || quotation.notes || quotation.description
+                  || body.commentaire || body.comment || body.notes || '',
+
+        // Statuts
+        statut:       'new',
+        installateur: null,
+        rdv:          null,
+        notes:        '',
+        imported:     false,
+        createdAt:    new Date().toISOString()
+      };
+
+      console.log('Dossier:', dossier.client, '|', dossier.ville, '|', dossier.tel, '|', dossier.email);
+
+      return firebasePost('/commandes_axonaut.json', dossier).then(function(result) {
+        console.log('Firebase OK');
+        res.writeHead(200, {'Content-Type': 'application/json'});
+        res.end(JSON.stringify({success: true, client: dossier.client}));
       });
-    }).then(function(result) {
-      console.log('Firebase OK:', result);
-      res.writeHead(200, {'Content-Type': 'application/json'});
-      res.end(JSON.stringify({success: true}));
+
     }).catch(function(err) {
       console.error('Erreur:', err.message);
-      // Meme en cas d erreur on repond 200 pour que Zapier ne bloque pas
       res.writeHead(200, {'Content-Type': 'application/json'});
       res.end(JSON.stringify({success: false, error: err.message}));
     });
@@ -198,5 +174,5 @@ var server = http.createServer(function(req, res) {
 });
 
 server.listen(PORT, function() {
-  console.log('PowerRecharge API v3 demarree sur port', PORT);
+  console.log('PowerRecharge API v4 demarree sur port', PORT);
 });
