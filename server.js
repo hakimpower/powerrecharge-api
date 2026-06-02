@@ -18,7 +18,7 @@ function firebasePost(path, data) {
       hostname: FIREBASE_URL,
       path: path + '?auth=' + FIREBASE_KEY,
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+      headers: {'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body)}
     };
     var req = https.request(options, function(res) {
       var d = ''; res.on('data', function(c){ d += c; }); res.on('end', function(){ resolve(d); });
@@ -34,7 +34,7 @@ function firebasePatch(path, data) {
       hostname: FIREBASE_URL,
       path: path + '?auth=' + FIREBASE_KEY,
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+      headers: {'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body)}
     };
     var req = https.request(options, function(res) {
       var d = ''; res.on('data', function(c){ d += c; }); res.on('end', function(){ resolve(d); });
@@ -45,16 +45,10 @@ function firebasePatch(path, data) {
 
 function firebaseGet(path) {
   return new Promise(function(resolve, reject) {
-    var options = {
-      hostname: FIREBASE_URL,
-      path: path + '?auth=' + FIREBASE_KEY,
-      method: 'GET'
-    };
+    var options = {hostname: FIREBASE_URL, path: path + '?auth=' + FIREBASE_KEY, method: 'GET'};
     var req = https.request(options, function(res) {
       var d = ''; res.on('data', function(c){ d += c; });
-      res.on('end', function(){
-        try { resolve(JSON.parse(d)); } catch(e) { resolve(null); }
-      });
+      res.on('end', function(){ try { resolve(JSON.parse(d)); } catch(e) { resolve(null); } });
     });
     req.on('error', reject); req.end();
   });
@@ -64,13 +58,23 @@ function parseBody(req) {
   return new Promise(function(resolve) {
     var body = '';
     req.on('data', function(c){ body += c; });
-    req.on('end', function(){
-      try { resolve(JSON.parse(body)); } catch(e) { resolve({}); }
-    });
+    req.on('end', function(){ try { resolve(JSON.parse(body)); } catch(e) { resolve({}); } });
   });
 }
 
-// Chercher un dossier existant par email ou ref Axonaut
+// Chercher dossier par company_id Axonaut
+function findDossierByAxonautId(axonautId) {
+  return firebaseGet('/commandes_axonaut.json').then(function(data) {
+    if (!data) return null;
+    var keys = Object.keys(data);
+    for (var i = 0; i < keys.length; i++) {
+      var d = data[keys[i]];
+      if (d && d.axonautId && String(d.axonautId) === String(axonautId)) return {key: keys[i], data: d};
+    }
+    return null;
+  });
+}
+
 function findDossierByRef(ref) {
   return firebaseGet('/commandes_axonaut.json').then(function(data) {
     if (!data) return null;
@@ -95,6 +99,19 @@ function findDossierByEmail(email) {
   });
 }
 
+// Mise a jour selective - ne jamais ecraser avec des valeurs vides
+function selectiveUpdate(existing, newData) {
+  var update = {updatedAt: new Date().toISOString()};
+  var fields = ['client','tel','email','adresse','ville','cp','dept','borne','montant','ref','commercial','datesign','commentaire','axonautId'];
+  fields.forEach(function(f) {
+    if (newData[f] !== undefined && newData[f] !== null && newData[f] !== '' && newData[f] !== 0) {
+      update[f] = newData[f];
+    }
+  });
+  if (newData.statut) update.statut = newData.statut;
+  return update;
+}
+
 // ═══ SERVER ═══
 var server = http.createServer(function(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -104,333 +121,229 @@ var server = http.createServer(function(req, res) {
 
   if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, {'Content-Type': 'application/json'});
-    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '6.4'}));
+    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '7.0'}));
     return;
   }
 
   if (req.url === '/axonaut-webhook' && req.method === 'POST') {
     parseBody(req).then(function(body) {
-      var topic     = (body.topic || '').toLowerCase();
-      var data      = body.data || body;
-      var company   = data.company || {};
+      var topic = (body.topic || '').toLowerCase();
+      var data  = body.data || body;
+      console.log('Topic:', topic, '| ID:', data.id, '| Name:', data.name || data.company_name || '');
+      console.log('Data:', JSON.stringify(data).slice(0, 600));
 
-      console.log('Topic:', topic, '| ID:', data.id, '| Name:', data.name || data.company_name);
-
-      // ═══════════════════════════════════════
-      // TOPIC: company.created ou company.updated
-      // Nouveau prospect depuis le formulaire
-      // ═══════════════════════════════════════
-      if (topic === 'company.created' || topic === 'company.updated') {
-        // Ignorer company.created car employees[] est vide a ce stade
-        // Seulement traiter company.updated qui contient toutes les infos
-        if (topic === 'company.created' && (!data.employees || data.employees.length === 0)) {
+      // ═══ COMPANY.CREATED ═══
+      // Creer le prospect avec les infos de base
+      if (topic === 'company.created') {
+        var employees = data.employees || [];
+        var contact   = employees.length > 0 ? employees[0] : {};
+        if (employees.length === 0) {
           console.log('company.created sans employees - on attend company.updated');
-          res.writeHead(200);
-          res.end(JSON.stringify({success: true, message: 'En attente company.updated'}));
+          res.writeHead(200); res.end(JSON.stringify({success: true, message: 'Attente company.updated'}));
           return;
         }
-        console.log('Company data complet:', JSON.stringify(data).slice(0, 1000));
-        // Extraire le contact principal depuis employees[]
-        var employees = data.employees || [];
-        var mainContact = employees.length > 0 ? employees[0] : {};
-        // Nom : company name ou prenom+nom du contact
-        var clientName = data.name || '';
-        if (!clientName && mainContact.firstname) {
-          clientName = (mainContact.firstname + ' ' + (mainContact.lastname || '')).trim();
-        }
-        var cp      = data.address_zip_code  || data.zipcode    || data.zip_code    || '';
-        var tel     = mainContact.cellphone_number || mainContact.phone_number
-                   || mainContact.mobile || data.phone || '';
-        console.log('Contact trouve:', mainContact.firstname, mainContact.email, tel);
-        var email   = mainContact.email       || data.email      || '';
-        var adresse = data.address_street     || data.address    || data.street      || '';
-        var ville   = data.address_city       || data.city       || data.ville       || '';
         var prospect = {
-          client:      clientName || data.name || '',
-          tel:         tel,
-          email:       email,
-          adresse:     adresse,
-          ville:       ville,
-          cp:          String(cp),
-          dept:        cp ? String(cp).slice(0, 2) : '',
-          borne:       '',
-          montant:     0,
-          ref:         'PROSPECT-' + data.id,
-          axonautId:   String(data.id || ''),
-          statut:      'prospect', // Toujours prospect pour company.created/updated
-          installateur: null,
-          rdv:          null,
-          notes:        '',
-          imported:     false,
-          createdAt:    new Date().toISOString(),
-          updatedAt:    new Date().toISOString()
+          client:    data.name || '',
+          tel:       contact.cellphone_number || contact.phone_number || contact.mobile || '',
+          email:     contact.email || '',
+          adresse:   data.address_street || '',
+          ville:     data.address_city || '',
+          cp:        String(data.address_zip_code || ''),
+          dept:      data.address_zip_code ? String(data.address_zip_code).slice(0,2) : '',
+          axonautId: String(data.id),
+          statut:    'prospect',
+          borne: '', montant: 0, ref: 'PROSPECT-' + data.id,
+          installateur: null, rdv: null, notes: '', imported: false,
+          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
         };
-
-        console.log('Prospect:', prospect.client, '|', prospect.ville, '|', prospect.tel);
-
-        // Verifier si prospect existe deja
-        return findDossierByEmail(prospect.email).then(function(existing) {
-          if (existing && topic === 'company.updated') {
-            // Mettre a jour le prospect existant
-            return firebasePatch('/commandes_axonaut/' + existing.key + '.json', {
-              client:  prospect.client,
-              tel:     prospect.tel,
-              email:   prospect.email,
-              adresse: prospect.adresse,
-              ville:   prospect.ville,
-              cp:      prospect.cp,
-              dept:    prospect.dept,
-              updatedAt: new Date().toISOString()
-            }).then(function() {
-              console.log('Prospect mis a jour:', prospect.client);
-              res.writeHead(200, {'Content-Type': 'application/json'});
-              res.end(JSON.stringify({success: true, action: 'updated'}));
-            });
-          } else if (!existing) {
-            // Creer nouveau prospect
-            return firebasePost('/commandes_axonaut.json', prospect).then(function() {
-              console.log('Prospect cree:', prospect.client);
-              res.writeHead(200, {'Content-Type': 'application/json'});
-              res.end(JSON.stringify({success: true, action: 'created'}));
-            });
-          } else {
-            console.log('Prospect deja existant - ignore');
-            res.writeHead(200, {'Content-Type': 'application/json'});
-            res.end(JSON.stringify({success: true, action: 'skipped'}));
-          }
-        });
-      }
-
-      // ═══════════════════════════════════════
-      // TOPIC: quotation.created
-      // Nouveau devis cree dans Axonaut
-      // ═══════════════════════════════════════
-      if (topic === 'quotation.created') {
-        var email     = (data.company && data.company.email) || data.company_email || '';
-        var companyName = data.company_name || (data.company && data.company.name) || '';
-        var cp2 = (data.company && data.company.zipcode) || '';
-        var borneTxt  = stripHtml(data.title || data.subject || 'Devis en cours');
-        var devisNum  = data.number || data.id || '';
-
-        // Nettoyer le titre
-        if (borneTxt.startsWith(String(devisNum))) {
-          borneTxt = borneTxt.slice(String(devisNum).length).trim();
-        }
-        if (!borneTxt || borneTxt.length < 2) borneTxt = 'Devis en cours';
-
-        // Chercher prospect existant par email
-        return findDossierByEmail(email).then(function(existing) {
+        console.log('Prospect:', prospect.client, prospect.tel, prospect.email);
+        return findDossierByAxonautId(data.id).then(function(existing) {
           if (existing) {
-            // Mettre a jour le dossier existant avec infos devis
-            return firebasePatch('/commandes_axonaut/' + existing.key + '.json', {
-              borne:     borneTxt,
-              ref:       'AX-' + devisNum,
-              statut:    'prospect',
-              montant:   Number(data.pre_tax_amount || data.total_amount || 0),
-              updatedAt: new Date().toISOString()
-            }).then(function() {
-              console.log('Dossier mis a jour avec devis:', borneTxt);
-              res.writeHead(200, {'Content-Type': 'application/json'});
-              res.end(JSON.stringify({success: true, action: 'devis_updated'}));
-            });
-          } else {
-            // Creer nouveau dossier
-            var newDossier = {
-              client:      companyName,
-              tel:         (data.company && data.company.phone) || '',
-              email:       email,
-              adresse:     (data.company && data.company.address) || '',
-              ville:       (data.company && data.company.city) || '',
-              cp:          String(cp2),
-              dept:        cp2 ? String(cp2).slice(0, 2) : '',
-              borne:       borneTxt,
-              montant:     Number(data.pre_tax_amount || data.total_amount || 0),
-              ref:         'AX-' + devisNum,
-              commercial:  String(data.user_id || ''),
-              datesign:    '',
-              commentaire: stripHtml(data.comments || ''),
-              statut:      'prospect', // Toujours prospect pour company.created/updated
-              installateur: null,
-              rdv:          null,
-              notes:        '',
-              imported:     false,
-              createdAt:    new Date().toISOString(),
-              updatedAt:    new Date().toISOString()
-            };
-            return firebasePost('/commandes_axonaut.json', newDossier).then(function() {
-              console.log('Dossier cree depuis devis:', newDossier.client);
-              res.writeHead(200, {'Content-Type': 'application/json'});
-              res.end(JSON.stringify({success: true, action: 'created'}));
-            });
+            return firebasePatch('/commandes_axonaut/' + existing.key + '.json', selectiveUpdate(existing.data, prospect));
           }
+          return firebasePost('/commandes_axonaut.json', prospect);
+        }).then(function() {
+          res.writeHead(200); res.end(JSON.stringify({success: true}));
         });
       }
 
-      // ═══════════════════════════════════════
-      // TOPIC: quotation.updated ou quotation.updated.customerAnswer
-      // Mise a jour devis ou signature client
-      // ═══════════════════════════════════════
-      if (topic.includes('quotation.updated')) {
-        var statut   = (data.status || '').toLowerCase();
-        var sigDate  = data.electronic_signature_date;
-        var isSigned = statut === 'accepted' || statut === 'signed' || statut === 'won'
-                    || (sigDate && sigDate !== null);
+      // ═══ COMPANY.UPDATED ═══
+      // Mettre a jour les infos client
+      if (topic === 'company.updated' || topic === 'company.updated.name') {
+        var employees2 = data.employees || [];
+        var contact2   = employees2.length > 0 ? employees2[0] : {};
+        var update2 = {
+          client:    data.name || '',
+          tel:       contact2.cellphone_number || contact2.phone_number || contact2.mobile || '',
+          email:     contact2.email || '',
+          adresse:   data.address_street || '',
+          ville:     data.address_city || '',
+          cp:        String(data.address_zip_code || ''),
+          dept:      data.address_zip_code ? String(data.address_zip_code).slice(0,2) : '',
+          axonautId: String(data.id),
+          updatedAt: new Date().toISOString()
+        };
+        console.log('Company update:', update2.client, update2.tel, update2.email, update2.adresse);
+        return findDossierByAxonautId(data.id).then(function(existing) {
+          if (existing) {
+            return firebasePatch('/commandes_axonaut/' + existing.key + '.json', selectiveUpdate(existing.data, update2));
+          }
+          // Creer si pas trouve
+          update2.statut = 'prospect';
+          update2.borne = ''; update2.montant = 0; update2.ref = 'PROSPECT-' + data.id;
+          update2.installateur = null; update2.rdv = null; update2.notes = '';
+          update2.imported = false; update2.createdAt = new Date().toISOString();
+          return firebasePost('/commandes_axonaut.json', update2);
+        }).then(function() {
+          res.writeHead(200); res.end(JSON.stringify({success: true}));
+        });
+      }
 
-        var devisNum2 = data.number || data.id || '';
-        var ref2      = 'AX-' + devisNum2;
-        var borneTxt2 = stripHtml(data.title || data.subject || '');
-        if (borneTxt2.startsWith(String(devisNum2))) borneTxt2 = borneTxt2.slice(String(devisNum2).length).trim();
-        if (!borneTxt2 || borneTxt2.length < 2) borneTxt2 = 'Borne a definir';
+      // ═══ ADDRESS.UPDATED ═══
+      // Mettre a jour l'adresse du prospect
+      if (topic === 'address.updated') {
+        console.log('Address data:', JSON.stringify(data));
+        var companyId = data.company_id || data.owner_id || data.entity_id;
+        var adresse3  = data.street || data.address || data.line1 || data.address_street || '';
+        var ville3    = data.city   || data.address_city   || '';
+        var cp3       = String(data.zipcode || data.zip_code || data.address_zip_code || data.postal_code || '');
+        if (!companyId) {
+          res.writeHead(200); res.end(JSON.stringify({success: true, message: 'Pas de company_id'}));
+          return;
+        }
+        return findDossierByAxonautId(companyId).then(function(existing) {
+          if (!existing) { res.writeHead(200); res.end(JSON.stringify({success: true, message: 'Prospect non trouve'})); return; }
+          var addrUpdate = {updatedAt: new Date().toISOString()};
+          if (adresse3) addrUpdate.adresse = adresse3;
+          if (ville3)   addrUpdate.ville   = ville3;
+          if (cp3)      { addrUpdate.cp = cp3; addrUpdate.dept = cp3.slice(0,2); }
+          console.log('Adresse mise a jour:', adresse3, ville3, cp3);
+          return firebasePatch('/commandes_axonaut/' + existing.key + '.json', addrUpdate);
+        }).then(function() {
+          res.writeHead(200); res.end(JSON.stringify({success: true}));
+        });
+      }
 
-        var sigStr = '';
-        if (sigDate && typeof sigDate === 'object' && sigDate.date) sigStr = sigDate.date.slice(0, 10);
-        else if (sigDate && typeof sigDate === 'string') sigStr = sigDate.slice(0, 10);
+      // ═══ EMPLOYEE.CREATED / EMPLOYEE.UPDATED ═══
+      // Mettre a jour tel et email depuis le contact
+      if (topic === 'employee.created' || topic === 'employee.updated') {
+        var companyId4 = data.company_id;
+        var tel4   = data.cellphone_number || data.phone_number || data.mobile || '';
+        var email4 = data.email || '';
+        console.log('Employee:', data.firstname, data.lastname, email4, tel4, 'Company:', companyId4);
+        if (!companyId4) {
+          res.writeHead(200); res.end(JSON.stringify({success: true}));
+          return;
+        }
+        return findDossierByAxonautId(companyId4).then(function(existing) {
+          if (!existing) { res.writeHead(200); res.end(JSON.stringify({success: true})); return; }
+          var empUpdate = {updatedAt: new Date().toISOString()};
+          if (tel4)   empUpdate.tel   = tel4;
+          if (email4) empUpdate.email = email4;
+          if (!existing.data.client && data.firstname) {
+            empUpdate.client = (data.firstname + ' ' + (data.lastname || '')).trim();
+          }
+          console.log('Employee update:', empUpdate);
+          return firebasePatch('/commandes_axonaut/' + existing.key + '.json', empUpdate);
+        }).then(function() {
+          res.writeHead(200); res.end(JSON.stringify({success: true}));
+        });
+      }
 
-        var email2 = (data.company && data.company.email) || data.company_email || '';
-        var montant2 = Number(data.total_amount || data.pre_tax_amount || 0);
+      // ═══ QUOTATION.CREATED ═══
+      // Ajouter borne et montant estimé
+      if (topic === 'quotation.created') {
+        var companyId5  = data.company_id;
+        var companyName5 = data.company_name || '';
+        var devisNum5   = data.number || data.id || '';
+        var borneTxt5   = stripHtml(data.title || data.subject || '');
+        if (borneTxt5.startsWith(String(devisNum5))) borneTxt5 = borneTxt5.slice(String(devisNum5).length).trim();
+        if (!borneTxt5 || borneTxt5.length < 2) borneTxt5 = 'Borne a definir';
+        var montant5 = Number(data.pre_tax_amount || data.total_amount || 0);
+        var ref5 = 'AX-' + devisNum5;
+        console.log('Quotation created:', companyName5, borneTxt5, montant5);
 
-        // Chercher par ref ou email
-        return findDossierByRef(ref2).then(function(existing) {
-          if (!existing && email2) return findDossierByEmail(email2);
-          return existing;
-        }).then(function(existing) {
-          var update = {
-            borne:     borneTxt2,
-            montant:   montant2,
-            ref:       ref2,
-            statut:    isSigned ? 'new' : 'devis_envoye',
+        return findDossierByAxonautId(companyId5).then(function(existing) {
+          var update5 = {
+            borne: borneTxt5, ref: ref5,
+            statut: 'prospect',
             updatedAt: new Date().toISOString()
           };
-          if (isSigned) {
-            update.datesign = sigStr || new Date().toLocaleDateString('fr-FR');
-          }
-
+          if (montant5) update5.montant = montant5;
           if (existing) {
-            return firebasePatch('/commandes_axonaut/' + existing.key + '.json', update).then(function() {
-              console.log('Dossier mis a jour:', existing.data.client, '| Signe:', isSigned);
-              res.writeHead(200, {'Content-Type': 'application/json'});
-              res.end(JSON.stringify({success: true, action: isSigned ? 'signed' : 'updated'}));
-            });
-          } else {
-            // Creer si pas trouve
-            var companyName2 = data.company_name || (data.company && data.company.name) || 'Client Axonaut';
-            var cp3 = (data.company && data.company.zipcode) || '';
-            update.client      = companyName2;
-            update.tel         = (data.company && data.company.phone) || '';
-            update.email       = email2;
-            update.adresse     = (data.company && data.company.address) || '';
-            update.ville       = (data.company && data.company.city) || '';
-            update.cp          = String(cp3);
-            update.dept        = cp3 ? String(cp3).slice(0, 2) : '';
-            update.commercial  = String(data.user_id || '');
-            update.commentaire = stripHtml(data.comments || '');
-            update.installateur = null;
-            update.rdv          = null;
-            update.notes        = '';
-            update.imported     = false;
-            update.createdAt    = new Date().toISOString();
-            return firebasePost('/commandes_axonaut.json', update).then(function() {
-              console.log('Dossier cree:', companyName2, '| Signe:', isSigned);
-              res.writeHead(200, {'Content-Type': 'application/json'});
-              res.end(JSON.stringify({success: true, action: 'created'}));
-            });
+            return firebasePatch('/commandes_axonaut/' + existing.key + '.json', update5);
           }
+          // Creer depuis devis si prospect pas encore cree
+          update5.client = companyName5; update5.axonautId = String(companyId5 || '');
+          update5.tel = ''; update5.email = ''; update5.adresse = ''; update5.ville = ''; update5.cp = ''; update5.dept = '';
+          update5.installateur = null; update5.rdv = null; update5.notes = ''; update5.imported = false;
+          update5.createdAt = new Date().toISOString();
+          return firebasePost('/commandes_axonaut.json', update5);
+        }).then(function() {
+          res.writeHead(200); res.end(JSON.stringify({success: true}));
         });
       }
 
-      // Topic non gere
+      // ═══ QUOTATION.UPDATED ═══
+      // Mise a jour devis ou signature
+      if (topic.includes('quotation.updated')) {
+        var statut6  = (data.status || '').toLowerCase();
+        var sigDate6 = data.electronic_signature_date;
+        var isSigned = statut6 === 'accepted' || statut6 === 'signed' || statut6 === 'won'
+                    || (sigDate6 && sigDate6 !== null && sigDate6 !== 'null');
+        var devisNum6 = data.number || data.id || '';
+        var ref6 = 'AX-' + devisNum6;
+        var borneTxt6 = stripHtml(data.title || data.subject || '');
+        if (borneTxt6.startsWith(String(devisNum6))) borneTxt6 = borneTxt6.slice(String(devisNum6).length).trim();
+        if (!borneTxt6 || borneTxt6.length < 2) borneTxt6 = '';
+        var sigStr6 = '';
+        if (sigDate6 && typeof sigDate6 === 'object' && sigDate6.date) sigStr6 = sigDate6.date.slice(0,10);
+        else if (sigDate6 && typeof sigDate6 === 'string') sigStr6 = sigDate6.slice(0,10);
+        var montant6 = Number(data.total_amount || data.pre_tax_amount || 0);
+        var companyId6 = data.company_id;
+        console.log('Quotation updated - signe:', isSigned, '| ref:', ref6, '| montant:', montant6);
+
+        return findDossierByAxonautId(companyId6).then(function(existing) {
+          if (!existing) return findDossierByRef(ref6);
+          return existing;
+        }).then(function(existing) {
+          var update6 = {
+            ref: ref6,
+            statut: isSigned ? 'new' : 'prospect',
+            updatedAt: new Date().toISOString()
+          };
+          if (borneTxt6) update6.borne = borneTxt6;
+          if (montant6)  update6.montant = montant6;
+          if (isSigned && sigStr6) update6.datesign = sigStr6;
+          if (existing) {
+            return firebasePatch('/commandes_axonaut/' + existing.key + '.json', update6);
+          }
+          // Creer si pas trouve
+          update6.client = data.company_name || 'Client Axonaut';
+          update6.axonautId = String(companyId6 || '');
+          update6.tel = ''; update6.email = ''; update6.adresse = ''; update6.ville = ''; update6.cp = ''; update6.dept = '';
+          update6.installateur = null; update6.rdv = null; update6.notes = ''; update6.imported = false;
+          update6.createdAt = new Date().toISOString();
+          return firebasePost('/commandes_axonaut.json', update6);
+        }).then(function() {
+          res.writeHead(200); res.end(JSON.stringify({success: true, signed: isSigned}));
+        });
+      }
+
+      // Topic ignore
       console.log('Topic ignore:', topic);
-      res.writeHead(200, {'Content-Type': 'application/json'});
-      res.end(JSON.stringify({success: true, message: 'Topic ignore: ' + topic}));
+      res.writeHead(200); res.end(JSON.stringify({success: true, message: 'Ignore: ' + topic}));
 
     }).catch(function(err) {
       console.error('Erreur:', err.message);
-      res.writeHead(200, {'Content-Type': 'application/json'});
-      res.end(JSON.stringify({success: false, error: err.message}));
+      res.writeHead(200); res.end(JSON.stringify({success: false, error: err.message}));
     });
     return;
   }
 
-
-  // ═══════════════════════════════════════
-  // ROUTE: /formulaire-webhook
-  // Reçoit les données du formulaire WordPress directement
-  // ═══════════════════════════════════════
-  if (req.url === '/formulaire-webhook' && req.method === 'POST') {
-    parseBody(req).then(function(body) {
-      console.log('Formulaire recu:', JSON.stringify(body).slice(0, 500));
-
-      var cp = body.code_postal || body.cp || '';
-      var dossier = {
-        client:      body.nom_prenom    || body.client || body.name || '',
-        tel:         body.telephone     || body.tel    || body.phone || '',
-        email:       body.email         || body.mail   || '',
-        adresse:     body.adresse       || body.address || '',
-        ville:       body.ville         || body.city   || '',
-        cp:          String(cp),
-        dept:        cp ? String(cp).slice(0, 2) : '',
-        borne:       body.borne         || body.type_borne || '',
-        type_logement: body.type_logement || '',
-        distance:    body.distance      || '',
-        gestion:     body.gestion_dynamique || '',
-        commentaire: body.remarques     || body.comment || '',
-        montant:     0,
-        ref:         'FORM-' + Date.now(),
-        commercial:  'Formulaire web',
-        datesign:    '',
-        statut:      'prospect',
-        installateur: null,
-        rdv:          null,
-        notes:        '',
-        imported:     false,
-        createdAt:    new Date().toISOString(),
-        updatedAt:    new Date().toISOString()
-      };
-
-      console.log('Prospect formulaire:', dossier.client, '|', dossier.ville, '|', dossier.tel);
-
-      // Verifier si prospect existe deja par email
-      return findDossierByEmail(dossier.email).then(function(existing) {
-        if (existing) {
-          // Mettre a jour avec les nouvelles infos
-          return firebasePatch('/commandes_axonaut/' + existing.key + '.json', {
-            tel:     dossier.tel,
-            adresse: dossier.adresse,
-            ville:   dossier.ville,
-            cp:      dossier.cp,
-            dept:    dossier.dept,
-            borne:   dossier.borne,
-            type_logement: dossier.type_logement,
-            distance:      dossier.distance,
-            gestion:       dossier.gestion,
-            commentaire:   dossier.commentaire,
-            updatedAt:     new Date().toISOString()
-          }).then(function() {
-            console.log('Prospect mis a jour depuis formulaire:', dossier.client);
-            res.writeHead(200, {'Content-Type': 'application/json'});
-            res.end(JSON.stringify({success: true, action: 'updated'}));
-          });
-        } else {
-          // Creer nouveau prospect
-          return firebasePost('/commandes_axonaut.json', dossier).then(function() {
-            console.log('Prospect cree depuis formulaire:', dossier.client);
-            res.writeHead(200, {'Content-Type': 'application/json'});
-            res.end(JSON.stringify({success: true, action: 'created'}));
-          });
-        }
-      });
-    }).catch(function(err) {
-      console.error('Erreur formulaire:', err.message);
-      res.writeHead(200, {'Content-Type': 'application/json'});
-      res.end(JSON.stringify({success: false, error: err.message}));
-    });
-    return;
-  }
-
-  res.writeHead(404);
-  res.end(JSON.stringify({error: 'Route inconnue'}));
+  res.writeHead(404); res.end(JSON.stringify({error: 'Route inconnue'}));
 });
 
 server.listen(PORT, function() {
-  console.log('PowerRecharge API v6 demarree sur port', PORT);
+  console.log('PowerRecharge API v7 demarree sur port', PORT);
 });
