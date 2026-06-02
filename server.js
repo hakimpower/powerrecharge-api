@@ -182,7 +182,7 @@ var server = http.createServer(function(req, res) {
 
   if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, {'Content-Type': 'application/json'});
-    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '7.6'}));
+    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '7.7'}));
     return;
   }
 
@@ -406,7 +406,8 @@ var server = http.createServer(function(req, res) {
             statut: isSigned ? 'new' : 'prospect',
             updatedAt: new Date().toISOString()
           };
-          if (borneTxt6) update6.borne = borneTxt6;
+          // Ne pas ecraser la borne si valeur par defaut ou vide
+          if (borneTxt6 && borneTxt6 !== 'Borne a definir') update6.borne = borneTxt6;
           if (montant6)  update6.montant = montant6;
           if (isSigned && sigStr6) update6.datesign = sigStr6;
           if (existing) {
