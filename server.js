@@ -113,6 +113,40 @@ function selectiveUpdate(existing, newData) {
 }
 
 
+
+// Appeler l'API Axonaut pour recuperer les adresses d'une entreprise
+function getAxonautAddresses(companyId) {
+  return new Promise(function(resolve) {
+    var options = {
+      hostname: 'app.axonaut.com',
+      path: '/api/v1/companies/' + companyId + '/addresses',
+      method: 'GET',
+      headers: {'apiKey': '619080bd85898f22780e9d463e107e8ac30647619080'}
+    };
+    var req = https.request(options, function(res) {
+      var d = '';
+      res.on('data', function(c){ d += c; });
+      res.on('end', function(){
+        try {
+          var addresses = JSON.parse(d);
+          console.log('Addresses from Axonaut:', JSON.stringify(addresses).slice(0, 300));
+          // Chercher l'adresse principale (is_for_quotation ou premiere adresse)
+          if (!Array.isArray(addresses) || addresses.length === 0) { resolve({}); return; }
+          var main = addresses.find(function(a){ return a.is_for_quotation; }) || addresses[0];
+          resolve({
+            adresse: main.address_street || main.street || '',
+            ville:   main.address_city   || main.city   || '',
+            cp:      String(main.address_zip_code || main.zipcode || main.zip_code || '')
+          });
+        } catch(e) { resolve({}); }
+      });
+    });
+    req.on('error', function(){ resolve({}); });
+    req.setTimeout(8000, function(){ req.destroy(); resolve({}); });
+    req.end();
+  });
+}
+
 // Appliquer une adresse en attente apres creation du prospect
 function applyPendingAddress(companyId, rdbKey) {
   return firebaseGet('/pending_addresses.json').then(function(data) {
@@ -148,7 +182,7 @@ var server = http.createServer(function(req, res) {
 
   if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, {'Content-Type': 'application/json'});
-    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '7.3'}));
+    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '7.5'}));
     return;
   }
 
@@ -199,35 +233,43 @@ var server = http.createServer(function(req, res) {
       if (topic === 'company.updated' || topic === 'company.updated.name') {
         var employees2 = data.employees || [];
         var contact2   = employees2.length > 0 ? employees2[0] : {};
-        var update2 = {
-          client:    data.name || '',
-          tel:       contact2.cellphone_number || contact2.phone_number || contact2.mobile || '',
-          email:     contact2.email || '',
-          adresse:   data.address_street || '',
-          ville:     data.address_city || '',
-          cp:        String(data.address_zip_code || ''),
-          dept:      data.address_zip_code ? String(data.address_zip_code).slice(0,2) : '',
-          axonautId: String(data.id),
-          updatedAt: new Date().toISOString()
-        };
-        console.log('Company update:', update2.client, update2.tel, update2.email, update2.adresse);
-        return findDossierByAxonautId(data.id).then(function(existing) {
-          if (existing) {
-            return firebasePatch('/commandes_axonaut/' + existing.key + '.json', selectiveUpdate(existing.data, update2));
-          }
-          // Creer si pas trouve
-          update2.statut = 'prospect';
-          update2.borne = ''; update2.montant = 0; update2.ref = 'PROSPECT-' + data.id;
-          update2.installateur = null; update2.rdv = null; update2.notes = '';
-          update2.imported = false; update2.createdAt = new Date().toISOString();
-          return firebasePost('/commandes_axonaut.json', update2).then(function(result) {
-            // Apres creation, verifier s'il y a une adresse en attente
-            var resultKey = JSON.parse(result).name;
-            return applyPendingAddress(String(data.id), resultKey);
+        var tel2   = contact2.cellphone_number || contact2.phone_number || contact2.mobile || '';
+        var email2 = contact2.email || '';
+        // Appeler l'API Axonaut pour recuperer les adresses automatiquement
+        getAxonautAddresses(data.id).then(function(addrData) {
+          var update2 = {
+            client:    data.name || '',
+            tel:       tel2,
+            email:     email2,
+            adresse:   addrData.adresse || data.address_street || '',
+            ville:     addrData.ville   || data.address_city   || '',
+            cp:        addrData.cp      || String(data.address_zip_code || ''),
+            dept:      (addrData.cp || data.address_zip_code) ? String(addrData.cp || data.address_zip_code).slice(0,2) : '',
+            axonautId: String(data.id),
+            updatedAt: new Date().toISOString()
+          };
+          console.log('Company update avec adresse:', update2.client, update2.tel, update2.email, '|', update2.adresse, update2.ville, update2.cp);
+          return findDossierByAxonautId(data.id).then(function(existing) {
+            if (existing) {
+              return firebasePatch('/commandes_axonaut/' + existing.key + '.json', selectiveUpdate(existing.data, update2));
+            }
+            // Creer si pas trouve
+            update2.statut = 'prospect';
+            update2.borne = ''; update2.montant = 0; update2.ref = 'PROSPECT-' + data.id;
+            update2.installateur = null; update2.rdv = null; update2.notes = '';
+            update2.imported = false; update2.createdAt = new Date().toISOString();
+            return firebasePost('/commandes_axonaut.json', update2).then(function(result) {
+              var resultKey = JSON.parse(result).name;
+              return applyPendingAddress(String(data.id), resultKey);
+            });
           });
         }).then(function() {
           res.writeHead(200); res.end(JSON.stringify({success: true}));
+        }).catch(function(e) {
+          console.error('company.updated error:', e.message);
+          res.writeHead(200); res.end(JSON.stringify({success: false, error: e.message}));
         });
+        return;
       }
 
       // ═══ ADDRESS.UPDATED ═══
