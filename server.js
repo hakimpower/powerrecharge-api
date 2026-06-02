@@ -121,7 +121,7 @@ var server = http.createServer(function(req, res) {
 
   if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, {'Content-Type': 'application/json'});
-    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '7.0'}));
+    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '7.1'}));
     return;
   }
 
@@ -235,8 +235,11 @@ var server = http.createServer(function(req, res) {
           res.writeHead(200); res.end(JSON.stringify({success: true}));
           return;
         }
-        return findDossierByAxonautId(companyId4).then(function(existing) {
-          if (!existing) { res.writeHead(200); res.end(JSON.stringify({success: true})); return; }
+        findDossierByAxonautId(companyId4).then(function(existing) {
+          if (!existing) {
+            res.writeHead(200); res.end(JSON.stringify({success: true, message: 'Prospect non trouve'}));
+            return;
+          }
           var empUpdate = {updatedAt: new Date().toISOString()};
           if (tel4)   empUpdate.tel   = tel4;
           if (email4) empUpdate.email = email4;
@@ -244,10 +247,15 @@ var server = http.createServer(function(req, res) {
             empUpdate.client = (data.firstname + ' ' + (data.lastname || '')).trim();
           }
           console.log('Employee update:', empUpdate);
-          return firebasePatch('/commandes_axonaut/' + existing.key + '.json', empUpdate);
-        }).then(function() {
-          res.writeHead(200); res.end(JSON.stringify({success: true}));
+          firebasePatch('/commandes_axonaut/' + existing.key + '.json', empUpdate).then(function() {
+            res.writeHead(200); res.end(JSON.stringify({success: true}));
+          }).catch(function(e) {
+            res.writeHead(200); res.end(JSON.stringify({success: false, error: e.message}));
+          });
+        }).catch(function(e) {
+          res.writeHead(200); res.end(JSON.stringify({success: false, error: e.message}));
         });
+        return;
       }
 
       // ═══ QUOTATION.CREATED ═══
