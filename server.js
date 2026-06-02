@@ -182,7 +182,7 @@ var server = http.createServer(function(req, res) {
 
   if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, {'Content-Type': 'application/json'});
-    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '7.5'}));
+    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '7.6'}));
     return;
   }
 
@@ -431,6 +431,75 @@ var server = http.createServer(function(req, res) {
     }).catch(function(err) {
       console.error('Erreur:', err.message);
       res.writeHead(200); res.end(JSON.stringify({success: false, error: err.message}));
+    });
+    return;
+  }
+
+
+  // ═══════════════════════════════════════
+  // ROUTE: /formulaire-webhook
+  // Recoit les donnees depuis Zapier avec toutes les infos client
+  // ═══════════════════════════════════════
+  if (req.url === '/formulaire-webhook' && req.method === 'POST') {
+    parseBody(req).then(function(body) {
+      console.log('Formulaire Zapier recu:', JSON.stringify(body).slice(0, 500));
+
+      var cp = body.cp || body.code_postal || '';
+      var axonautId = body.axonautId || body.axonaut_id || '';
+
+      var dossier = {
+        client:    body.client    || body.nom_prenom  || body.name || '',
+        tel:       body.tel       || body.telephone   || body.phone || '',
+        email:     body.email     || body.mail        || '',
+        adresse:   body.adresse   || body.address     || '',
+        ville:     body.ville     || body.city        || '',
+        cp:        String(cp),
+        dept:      cp ? String(cp).slice(0, 2) : '',
+        borne:     body.borne     || body.title       || '',
+        montant:   Number(body.montant || 0),
+        ref:       body.ref       || (axonautId ? 'PROSPECT-' + axonautId : 'FORM-' + Date.now()),
+        axonautId: String(axonautId),
+        commentaire: body.remarques || body.comment || '',
+        statut:    'prospect',
+        installateur: null, rdv: null, notes: '',
+        imported: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
+      console.log('Prospect depuis Zapier:', dossier.client, '|', dossier.adresse, dossier.ville, dossier.cp, '|', dossier.tel);
+
+      // Chercher par axonautId en priorite, sinon par email
+      var findPromise = axonautId
+        ? findDossierByAxonautId(axonautId)
+        : Promise.resolve(null);
+
+      findPromise.then(function(existing) {
+        if (!existing && dossier.email) return findDossierByEmail(dossier.email);
+        return existing;
+      }).then(function(existing) {
+        if (existing) {
+          // Mettre a jour avec les nouvelles infos (selective)
+          var update = {updatedAt: new Date().toISOString()};
+          var fields = ['client','tel','email','adresse','ville','cp','dept','borne','axonautId'];
+          fields.forEach(function(f) {
+            if (dossier[f] && dossier[f] !== '' && dossier[f] !== '0') update[f] = dossier[f];
+          });
+          console.log('Mise a jour prospect existant:', existing.data.client);
+          firebasePatch('/commandes_axonaut/' + existing.key + '.json', update).then(function() {
+            res.writeHead(200); res.end(JSON.stringify({success: true, action: 'updated'}));
+          }).catch(function(e){ res.writeHead(200); res.end(JSON.stringify({error: e.message})); });
+        } else {
+          // Creer nouveau prospect
+          console.log('Creation nouveau prospect:', dossier.client);
+          firebasePost('/commandes_axonaut.json', dossier).then(function() {
+            res.writeHead(200); res.end(JSON.stringify({success: true, action: 'created'}));
+          }).catch(function(e){ res.writeHead(200); res.end(JSON.stringify({error: e.message})); });
+        }
+      }).catch(function(e) {
+        console.error('Erreur formulaire:', e.message);
+        res.writeHead(200); res.end(JSON.stringify({success: false, error: e.message}));
+      });
     });
     return;
   }
