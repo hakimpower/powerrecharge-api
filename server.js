@@ -121,7 +121,7 @@ var server = http.createServer(function(req, res) {
 
   if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, {'Content-Type': 'application/json'});
-    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '7.1'}));
+    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '7.2'}));
     return;
   }
 
@@ -203,10 +203,12 @@ var server = http.createServer(function(req, res) {
       // Mettre a jour l'adresse du prospect
       if (topic === 'address.updated') {
         console.log('Address data:', JSON.stringify(data));
-        var companyId = data.company_id || data.owner_id || data.entity_id;
-        var adresse3  = data.street || data.address || data.line1 || data.address_street || '';
-        var ville3    = data.city   || data.address_city   || '';
-        var cp3       = String(data.zipcode || data.zip_code || data.address_zip_code || data.postal_code || '');
+        // L'ID entreprise est dans data.company.id
+        var companyId = (data.company && data.company.id) || data.company_id || data.owner_id || data.entity_id;
+        var adresse3  = data.address_street || data.street || data.address || data.line1 || '';
+        var ville3    = data.address_city   || data.city   || '';
+        var cp3       = String(data.address_zip_code || data.zipcode || data.zip_code || data.postal_code || '');
+        console.log('Address parsed - CompanyId:', companyId, '| Rue:', adresse3, '| Ville:', ville3, '| CP:', cp3);
         if (!companyId) {
           res.writeHead(200); res.end(JSON.stringify({success: true, message: 'Pas de company_id'}));
           return;
