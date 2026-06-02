@@ -182,7 +182,7 @@ var server = http.createServer(function(req, res) {
 
   if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, {'Content-Type': 'application/json'});
-    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '7.7'}));
+    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '7.8'}));
     return;
   }
 
@@ -352,17 +352,19 @@ var server = http.createServer(function(req, res) {
         var devisNum5   = data.number || data.id || '';
         var borneTxt5   = stripHtml(data.title || data.subject || '');
         if (borneTxt5.startsWith(String(devisNum5))) borneTxt5 = borneTxt5.slice(String(devisNum5).length).trim();
-        if (!borneTxt5 || borneTxt5.length < 2) borneTxt5 = 'Borne a definir';
+        // Ne pas remplacer par valeur par defaut - laisser vide si titre vide
+        if (!borneTxt5 || borneTxt5.length < 2) borneTxt5 = '';
         var montant5 = Number(data.pre_tax_amount || data.total_amount || 0);
         var ref5 = 'AX-' + devisNum5;
         console.log('Quotation created:', companyName5, borneTxt5, montant5);
 
         return findDossierByAxonautId(companyId5).then(function(existing) {
           var update5 = {
-            borne: borneTxt5, ref: ref5,
+            ref: ref5,
             statut: 'prospect',
             updatedAt: new Date().toISOString()
           };
+          if (borneTxt5) update5.borne = borneTxt5;
           if (montant5) update5.montant = montant5;
           if (existing) {
             return firebasePatch('/commandes_axonaut/' + existing.key + '.json', update5);
