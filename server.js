@@ -112,6 +112,33 @@ function selectiveUpdate(existing, newData) {
   return update;
 }
 
+
+// Appliquer une adresse en attente apres creation du prospect
+function applyPendingAddress(companyId, rdbKey) {
+  return firebaseGet('/pending_addresses.json').then(function(data) {
+    if (!data) return;
+    var keys = Object.keys(data);
+    var found = null;
+    for (var i = 0; i < keys.length; i++) {
+      if (data[keys[i]] && String(data[keys[i]].companyId) === String(companyId)) {
+        found = {key: keys[i], data: data[keys[i]]};
+        break;
+      }
+    }
+    if (!found) return;
+    console.log('Adresse en attente trouvee pour:', companyId, found.data.adresse);
+    var addrUpdate = {updatedAt: new Date().toISOString()};
+    if (found.data.adresse) addrUpdate.adresse = found.data.adresse;
+    if (found.data.ville)   addrUpdate.ville   = found.data.ville;
+    if (found.data.cp)      { addrUpdate.cp = found.data.cp; addrUpdate.dept = found.data.dept || found.data.cp.slice(0,2); }
+    // Supprimer l'adresse en attente
+    return Promise.all([
+      firebasePatch('/commandes_axonaut/' + rdbKey + '.json', addrUpdate),
+      firebasePatch('/pending_addresses/' + found.key + '.json', {deleted: true})
+    ]);
+  }).catch(function(e){ console.warn('applyPendingAddress error:', e.message); });
+}
+
 // ═══ SERVER ═══
 var server = http.createServer(function(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -121,7 +148,7 @@ var server = http.createServer(function(req, res) {
 
   if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, {'Content-Type': 'application/json'});
-    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '7.2'}));
+    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '7.3'}));
     return;
   }
 
@@ -193,7 +220,11 @@ var server = http.createServer(function(req, res) {
           update2.borne = ''; update2.montant = 0; update2.ref = 'PROSPECT-' + data.id;
           update2.installateur = null; update2.rdv = null; update2.notes = '';
           update2.imported = false; update2.createdAt = new Date().toISOString();
-          return firebasePost('/commandes_axonaut.json', update2);
+          return firebasePost('/commandes_axonaut.json', update2).then(function(result) {
+            // Apres creation, verifier s'il y a une adresse en attente
+            var resultKey = JSON.parse(result).name;
+            return applyPendingAddress(String(data.id), resultKey);
+          });
         }).then(function() {
           res.writeHead(200); res.end(JSON.stringify({success: true}));
         });
@@ -213,17 +244,28 @@ var server = http.createServer(function(req, res) {
           res.writeHead(200); res.end(JSON.stringify({success: true, message: 'Pas de company_id'}));
           return;
         }
-        return findDossierByAxonautId(companyId).then(function(existing) {
-          if (!existing) { res.writeHead(200); res.end(JSON.stringify({success: true, message: 'Prospect non trouve'})); return; }
-          var addrUpdate = {updatedAt: new Date().toISOString()};
-          if (adresse3) addrUpdate.adresse = adresse3;
-          if (ville3)   addrUpdate.ville   = ville3;
-          if (cp3)      { addrUpdate.cp = cp3; addrUpdate.dept = cp3.slice(0,2); }
-          console.log('Adresse mise a jour:', adresse3, ville3, cp3);
-          return firebasePatch('/commandes_axonaut/' + existing.key + '.json', addrUpdate);
-        }).then(function() {
-          res.writeHead(200); res.end(JSON.stringify({success: true}));
-        });
+        findDossierByAxonautId(companyId).then(function(existing) {
+          var addrData = {};
+          if (adresse3) addrData.adresse = adresse3;
+          if (ville3)   addrData.ville   = ville3;
+          if (cp3)      { addrData.cp = cp3; addrData.dept = cp3.slice(0,2); }
+          addrData.updatedAt = new Date().toISOString();
+
+          if (existing) {
+            console.log('Adresse mise a jour:', adresse3, ville3, cp3);
+            firebasePatch('/commandes_axonaut/' + existing.key + '.json', addrData).then(function() {
+              res.writeHead(200); res.end(JSON.stringify({success: true}));
+            }).catch(function(e){ res.writeHead(200); res.end(JSON.stringify({error: e.message})); });
+          } else {
+            // Prospect pas encore cree - sauvegarder l'adresse en attente
+            console.log('Prospect non trouve - adresse en attente pour companyId:', companyId);
+            addrData.companyId = String(companyId);
+            firebasePost('/pending_addresses.json', addrData).then(function() {
+              res.writeHead(200); res.end(JSON.stringify({success: true, message: 'Adresse en attente'}));
+            }).catch(function(e){ res.writeHead(200); res.end(JSON.stringify({error: e.message})); });
+          }
+        }).catch(function(e){ res.writeHead(200); res.end(JSON.stringify({error: e.message})); });
+        return;
       }
 
       // ═══ EMPLOYEE.CREATED / EMPLOYEE.UPDATED ═══
