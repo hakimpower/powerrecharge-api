@@ -147,6 +147,37 @@ function getAxonautAddresses(companyId) {
   });
 }
 
+
+// ═══════════════════════════════════════
+// ZAPIER NOTIFICATION WEBHOOKS
+// ═══════════════════════════════════════
+var ZAPIER = {
+  nouveau_prospect:  'https://hooks.zapier.com/hooks/catch/21452394/4bkfyuv/',
+  mission_affectee:  'https://hooks.zapier.com/hooks/catch/21452394/4bkfd5b/',
+  rdv_client:        'https://hooks.zapier.com/hooks/catch/21452394/4bkfrne/',
+  rdv_admin:         'https://hooks.zapier.com/hooks/catch/21452394/4bkfs78/',
+  installation_client: 'https://hooks.zapier.com/hooks/catch/21452394/4bkfzho/',
+  installation_admin:  'https://hooks.zapier.com/hooks/catch/21452394/4bkfkye/'
+};
+
+function sendZapierNotif(url, data) {
+  var body = JSON.stringify(data);
+  var urlObj = new URL(url);
+  var options = {
+    hostname: urlObj.hostname,
+    path:     urlObj.pathname,
+    method:   'POST',
+    headers:  {'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body)}
+  };
+  var req = https.request(options, function(res) {
+    res.on('data', function(){});
+    res.on('end', function(){ console.log('Zapier notif sent:', url.split('/').pop()); });
+  });
+  req.on('error', function(e){ console.warn('Zapier notif error:', e.message); });
+  req.write(body);
+  req.end();
+}
+
 // Appliquer une adresse en attente apres creation du prospect
 function applyPendingAddress(companyId, rdbKey) {
   return firebaseGet('/pending_addresses.json').then(function(data) {
@@ -182,7 +213,7 @@ var server = http.createServer(function(req, res) {
 
   if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, {'Content-Type': 'application/json'});
-    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '7.9'}));
+    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '8.0'}));
     return;
   }
 
@@ -509,6 +540,76 @@ var server = http.createServer(function(req, res) {
         console.error('Erreur formulaire:', e.message);
         res.writeHead(200); res.end(JSON.stringify({success: false, error: e.message}));
       });
+    });
+    return;
+  }
+
+
+  // ═══════════════════════════════════════
+  // ROUTE: /notify
+  // Recoit les notifications depuis le dashboard et l'espace installateur
+  // ═══════════════════════════════════════
+  if (req.url === '/notify' && req.method === 'POST') {
+    parseBody(req).then(function(body) {
+      var type = body.type;
+      console.log('Notification:', type, '|', body.client);
+
+      if (type === 'mission_affectee') {
+        // Notif 2 - Mission affectee → Installateur
+        sendZapierNotif(ZAPIER.mission_affectee, {
+          client:       body.client,
+          adresse:      body.adresse,
+          ville:        body.ville,
+          tel:          body.tel,
+          borne:        body.borne,
+          installateur: body.installateur,
+          inst_email:   body.inst_email,
+          inst_code:    body.inst_code,
+          notes:        body.notes || ''
+        });
+      } else if (type === 'rdv_confirme') {
+        // Notif 3 - RDV confirmé → Client
+        sendZapierNotif(ZAPIER.rdv_client, {
+          client:       body.client,
+          email:        body.email,
+          tel:          body.tel,
+          rdv:          body.rdv,
+          installateur: body.installateur,
+          borne:        body.borne,
+          adresse:      body.adresse
+        });
+        // Notif 4 - RDV confirmé → Admin
+        sendZapierNotif(ZAPIER.rdv_admin, {
+          client:       body.client,
+          rdv:          body.rdv,
+          installateur: body.installateur,
+          borne:        body.borne,
+          adresse:      body.adresse,
+          ville:        body.ville
+        });
+      } else if (type === 'installation_terminee') {
+        // Notif 5 - Installation terminée → Client
+        sendZapierNotif(ZAPIER.installation_client, {
+          client:       body.client,
+          email:        body.email,
+          borne:        body.borne,
+          adresse:      body.adresse,
+          installateur: body.installateur,
+          date:         body.date || new Date().toLocaleDateString('fr-FR')
+        });
+        // Notif 6 - Installation terminée → Admin
+        sendZapierNotif(ZAPIER.installation_admin, {
+          client:       body.client,
+          borne:        body.borne,
+          adresse:      body.adresse,
+          ville:        body.ville,
+          installateur: body.installateur,
+          date:         body.date || new Date().toLocaleDateString('fr-FR'),
+          rapport:      body.rapport || ''
+        });
+      }
+
+      res.writeHead(200); res.end(JSON.stringify({success: true}));
     });
     return;
   }
