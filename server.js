@@ -182,7 +182,7 @@ var server = http.createServer(function(req, res) {
 
   if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, {'Content-Type': 'application/json'});
-    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '7.8'}));
+    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '7.9'}));
     return;
   }
 
@@ -385,8 +385,14 @@ var server = http.createServer(function(req, res) {
       if (topic.includes('quotation.updated')) {
         var statut6  = (data.status || '').toLowerCase();
         var sigDate6 = data.electronic_signature_date;
-        var isSigned = statut6 === 'accepted' || statut6 === 'signed' || statut6 === 'won'
-                    || (sigDate6 && sigDate6 !== null && sigDate6 !== 'null');
+        // Signe UNIQUEMENT si topic customerAnswer ET statut accepte ET date de signature presente
+        var isCustomerAnswer = topic.includes('customeranswer');
+        var hasSignature = sigDate6 && sigDate6 !== null && sigDate6 !== 'null'
+                        && typeof sigDate6 === 'object' && sigDate6.date;
+        var isSigned = isCustomerAnswer
+                    && (statut6 === 'accepted' || statut6 === 'signed' || statut6 === 'won')
+                    && hasSignature;
+        console.log('isSigned check - topic:', topic, '| statut:', statut6, '| hasSignature:', !!hasSignature, '| isSigned:', isSigned);
         var devisNum6 = data.number || data.id || '';
         var ref6 = 'AX-' + devisNum6;
         var borneTxt6 = stripHtml(data.title || data.subject || '');
@@ -472,13 +478,13 @@ var server = http.createServer(function(req, res) {
 
       console.log('Prospect depuis Zapier:', dossier.client, '|', dossier.adresse, dossier.ville, dossier.cp, '|', dossier.tel);
 
-      // Chercher par axonautId en priorite, sinon par email
+      // Chercher par axonautId en priorite UNIQUEMENT
+      // Ne pas chercher par email pour eviter de mettre a jour le mauvais prospect
       var findPromise = axonautId
         ? findDossierByAxonautId(axonautId)
         : Promise.resolve(null);
 
       findPromise.then(function(existing) {
-        if (!existing && dossier.email) return findDossierByEmail(dossier.email);
         return existing;
       }).then(function(existing) {
         if (existing) {
