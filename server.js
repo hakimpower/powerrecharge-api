@@ -213,7 +213,7 @@ var server = http.createServer(function(req, res) {
 
   if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, {'Content-Type': 'application/json'});
-    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '8.1'}));
+    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '8.2'}));
     return;
   }
 
@@ -533,6 +533,16 @@ var server = http.createServer(function(req, res) {
           // Creer nouveau prospect
           console.log('Creation nouveau prospect:', dossier.client);
           firebasePost('/commandes_axonaut.json', dossier).then(function() {
+            // Notif 1 - Nouveau prospect
+            sendZapierNotif(ZAPIER.nouveau_prospect, {
+              client:  dossier.client,
+              tel:     dossier.tel,
+              email:   dossier.email,
+              adresse: dossier.adresse,
+              ville:   dossier.ville,
+              cp:      dossier.cp,
+              borne:   dossier.borne || 'A definir'
+            });
             res.writeHead(200); res.end(JSON.stringify({success: true, action: 'created'}));
           }).catch(function(e){ res.writeHead(200); res.end(JSON.stringify({error: e.message})); });
         }
