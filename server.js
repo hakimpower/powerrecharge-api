@@ -213,7 +213,7 @@ var server = http.createServer(function(req, res) {
 
   if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, {'Content-Type': 'application/json'});
-    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '8.0'}));
+    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '8.1'}));
     return;
   }
 
@@ -603,6 +603,7 @@ var server = http.createServer(function(req, res) {
           borne:        body.borne,
           adresse:      body.adresse,
           ville:        body.ville,
+          cp:           body.cp || '',
           installateur: body.installateur,
           date:         body.date || new Date().toLocaleDateString('fr-FR'),
           rapport:      body.rapport || ''
