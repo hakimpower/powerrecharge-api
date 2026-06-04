@@ -213,7 +213,7 @@ var server = http.createServer(function(req, res) {
 
   if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, {'Content-Type': 'application/json'});
-    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '8.2'}));
+    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '8.3'}));
     return;
   }
 
@@ -621,6 +621,69 @@ var server = http.createServer(function(req, res) {
       }
 
       res.writeHead(200); res.end(JSON.stringify({success: true}));
+    });
+    return;
+  }
+
+
+  // ═══════════════════════════════════════
+  // ROUTE: /lead-webhook
+  // Recoit les leads Facebook depuis Zapier
+  // ═══════════════════════════════════════
+  if (req.url === '/lead-webhook' && req.method === 'POST') {
+    parseBody(req).then(function(body) {
+      console.log('Lead Facebook recu:', JSON.stringify(body).slice(0, 400));
+
+      var cp = body.cp || body.code_postal || body.zip || '';
+      var lead = {
+        client:       body.client || body.nom_prenom || body.full_name || body.name || '',
+        email:        body.email  || body.mail || '',
+        tel:          body.tel    || body.telephone || body.phone || '',
+        cp:           String(cp),
+        dept:         cp ? String(cp).slice(0, 2) : '',
+        type_logement: body.type_logement || body.logement || '',
+        statut:       'lead',
+        source:       'Facebook Lead Ads',
+        adresse:      '',
+        ville:        '',
+        borne:        '',
+        montant:      0,
+        ref:          'FB-' + Date.now(),
+        installateur: null,
+        rdv:          null,
+        notes:        '',
+        imported:     false,
+        createdAt:    new Date().toISOString(),
+        updatedAt:    new Date().toISOString()
+      };
+
+      console.log('Lead:', lead.client, '|', lead.email, '|', lead.tel, '|', lead.cp);
+
+      // Verifier si lead existe deja par email
+      findDossierByEmail(lead.email).then(function(existing) {
+        if (existing) {
+          console.log('Lead deja existant:', existing.data.client);
+          res.writeHead(200); res.end(JSON.stringify({success: true, action: 'already_exists'}));
+          return;
+        }
+        return firebasePost('/commandes_axonaut.json', lead).then(function() {
+          console.log('Lead cree:', lead.client);
+          // Notif admin - nouveau lead
+          sendZapierNotif(ZAPIER.nouveau_prospect, {
+            client:  lead.client,
+            tel:     lead.tel,
+            email:   lead.email,
+            adresse: 'CP: ' + lead.cp,
+            ville:   lead.type_logement,
+            cp:      lead.cp,
+            borne:   'Lead Facebook - Formulaire non rempli'
+          });
+          res.writeHead(200); res.end(JSON.stringify({success: true, action: 'created'}));
+        });
+      }).catch(function(e) {
+        console.error('Lead error:', e.message);
+        res.writeHead(200); res.end(JSON.stringify({success: false, error: e.message}));
+      });
     });
     return;
   }
