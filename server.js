@@ -808,9 +808,13 @@ var server = http.createServer(function(req, res) {
         try {
           var qs=JSON.parse(dS); if(!Array.isArray(qs)){res.writeHead(400);res.end('{}');return;}
           var ups=qs.map(function(q){
-            var r='AX-'+(q.number||q.id), m=Number(q.pre_tax_amount||q.total_amount||0), c=String(q.company_id||'');
+            var num=String(q.number||q.id||'');
+            var r1='AX-'+num, r2='AX-#'+num;
+            var m=Number(q.pre_tax_amount||q.total_amount||0), c=String(q.company_id||'');
             if(!m) return Promise.resolve(null);
-            return firestoreQuery('ref',r).then(function(d){return d||firestoreQuery('axonautId',c);}).then(function(d){
+            return firestoreQuery('ref',r1).then(function(d){
+              return d||firestoreQuery('ref',r2);
+            }).then(function(d){return d||firestoreQuery('axonautId',c);}).then(function(d){
               if(!d) return null;
               var u={montant:m,updatedAt:new Date().toISOString()};
               var t=(q.title||'').replace(/<[^>]*>/g,'').trim(); if(t&&t.length>2) u.borne=t;
