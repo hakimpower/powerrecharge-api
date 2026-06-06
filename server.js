@@ -808,10 +808,26 @@ var server = http.createServer(function(req, res) {
     req.on('end', function() {
       try {
         var payload = JSON.parse(body);
-        // Zapier envoie les devis dans payload.quotations (tableau JSON stringifie ou objet)
-        var quotations = payload.quotations;
-        if (typeof quotations === 'string') quotations = JSON.parse(quotations);
-        if (!Array.isArray(quotations)) quotations = [quotations];
+        var quotations;
+
+        // Mode 1 : Zapier envoie champs separés (num, montant, companyId, borne)
+        if (payload.num || payload.number) {
+          var num = String(payload.num || payload.number || '').replace('#','');
+          quotations = [{
+            num:       num,
+            ref:       'AX-' + num,
+            refHash:   'AX-#' + num,
+            montant:   Number(payload.montant || payload.pre_tax_amount || 0),
+            companyId: String(payload.companyId || payload.company_id || ''),
+            borne:     String(payload.borne || payload.title || '')
+          }];
+        }
+        // Mode 2 : tableau JSON
+        else {
+          quotations = payload.quotations;
+          if (typeof quotations === 'string') try { quotations = JSON.parse(quotations); } catch(e) {}
+          if (!Array.isArray(quotations)) quotations = [quotations];
+        }
 
         console.log('Sync Zap: received', quotations.length, 'quotations');
         var updated = 0;
@@ -855,6 +871,52 @@ var server = http.createServer(function(req, res) {
         res.end(JSON.stringify({ error: 'JSON invalide: ' + e.message }));
       }
     });
+    return;
+  }
+
+
+  // ═══ PROXY AXONAUT QUOTATIONS ═══
+  if (req.url === '/axonaut-quotations' && req.method === 'GET') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET');
+    var options = {
+      hostname: 'app.axonaut.com',
+      path: '/api/v1/quotations?limit=200',
+      method: 'GET',
+      headers: { 'apiKey': '619080bd85898f22780e9d463e107e8ac30647619080' }
+    };
+    var proxyReq = https.request(options, function(proxyRes) {
+      var data = '';
+      proxyRes.on('data', function(c){ data += c; });
+      proxyRes.on('end', function() {
+        try {
+          var parsed = JSON.parse(data);
+          var qs = Array.isArray(parsed) ? parsed : (parsed.data || parsed.quotations || []);
+          var result = qs.map(function(q) {
+            return {
+              number:        q.number || '',
+              pre_tax_amount: Number(q.pre_tax_amount || 0),
+              company_id:    String(q.company_id || '')
+            };
+          });
+          res.writeHead(200, {'Content-Type': 'application/json'});
+          res.end(JSON.stringify(result));
+        } catch(e) {
+          res.writeHead(500);
+          res.end(JSON.stringify({error: e.message}));
+        }
+      });
+    });
+    proxyReq.on('error', function(e) {
+      res.writeHead(500);
+      res.end(JSON.stringify({error: e.message}));
+    });
+    proxyReq.setTimeout(10000, function() {
+      proxyReq.destroy();
+      res.writeHead(504);
+      res.end(JSON.stringify({error: 'Timeout'}));
+    });
+    proxyReq.end();
     return;
   }
 
