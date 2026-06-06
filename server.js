@@ -11,6 +11,89 @@ function stripHtml(str) {
   return String(str).replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').trim();
 }
 
+
+const FIRESTORE_URL = 'firestore.googleapis.com';
+const FIREBASE_PROJECT = 'powerrecharge-admin';
+const FIREBASE_API_KEY = 'AIzaSyAIUZttIylRrTBb3BuQsMVJzYgIqu35hc4';
+
+// Rechercher un dossier dans Firestore par champ
+function firestoreQuery(field, value) {
+  return new Promise(function(resolve) {
+    var body = JSON.stringify({
+      structuredQuery: {
+        from: [{collectionId: 'dossiers'}],
+        where: {
+          fieldFilter: {
+            field: {fieldPath: field},
+            op: 'EQUAL',
+            value: {stringValue: String(value)}
+          }
+        },
+        limit: 1
+      }
+    });
+    var options = {
+      hostname: FIRESTORE_URL,
+      path: '/v1/projects/' + FIREBASE_PROJECT + '/databases/(default)/documents:runQuery?key=' + FIREBASE_API_KEY,
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body)}
+    };
+    var req = https.request(options, function(res) {
+      var d = '';
+      res.on('data', function(c){ d += c; });
+      res.on('end', function(){
+        try {
+          var results = JSON.parse(d);
+          var doc = results.find(function(r){ return r.document; });
+          if (doc && doc.document) {
+            var name = doc.document.name;
+            var docId = name.split('/').pop();
+            resolve({id: docId, data: doc.document.fields});
+          } else {
+            resolve(null);
+          }
+        } catch(e) { console.error('firestoreQuery error:', e.message); resolve(null); }
+      });
+    });
+    req.on('error', function(e){ console.error('firestoreQuery req error:', e.message); resolve(null); });
+    req.end(body);
+  });
+}
+
+// Mettre a jour un champ dans un document Firestore
+function firestoreUpdate(docId, fields) {
+  return new Promise(function(resolve) {
+    // Convertir les champs en format Firestore
+    var fsFields = {};
+    var masks = [];
+    Object.keys(fields).forEach(function(k) {
+      var v = fields[k];
+      masks.push(k);
+      if (typeof v === 'number') fsFields[k] = {doubleValue: v};
+      else if (typeof v === 'boolean') fsFields[k] = {booleanValue: v};
+      else fsFields[k] = {stringValue: String(v)};
+    });
+    var maskStr = masks.map(function(m){ return 'updateMask.fieldPaths=' + m; }).join('&');
+    var body = JSON.stringify({fields: fsFields});
+    var options = {
+      hostname: FIRESTORE_URL,
+      path: '/v1/projects/' + FIREBASE_PROJECT + '/databases/(default)/documents/dossiers/' + docId + '?' + maskStr + '&key=' + FIREBASE_API_KEY,
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body)}
+    };
+    var req = https.request(options, function(res) {
+      var d = '';
+      res.on('data', function(c){ d += c; });
+      res.on('end', function(){
+        console.log('Firestore update response:', res.statusCode, d.slice(0,100));
+        resolve(res.statusCode);
+      });
+    });
+    req.on('error', function(e){ console.error('firestoreUpdate error:', e.message); resolve(0); });
+    req.end(body);
+  });
+}
+
 function firebasePost(path, data) {
   return new Promise(function(resolve, reject) {
     var body = JSON.stringify(data);
@@ -213,7 +296,7 @@ var server = http.createServer(function(req, res) {
 
   if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, {'Content-Type': 'application/json'});
-    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '8.3'}));
+    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '8.4'}));
     return;
   }
 
@@ -407,6 +490,15 @@ var server = http.createServer(function(req, res) {
           update5.createdAt = new Date().toISOString();
           return firebasePost('/commandes_axonaut.json', update5);
         }).then(function() {
+          // Mettre a jour Firestore aussi
+          if (montant5 > 0) {
+            firestoreQuery('ref', ref5).then(function(fsDoc) {
+              if (!fsDoc) return firestoreQuery('axonautId', String(companyId5));
+              return fsDoc;
+            }).then(function(fsDoc) {
+              if (fsDoc) firestoreUpdate(fsDoc.id, {montant: montant5, ref: ref5, updatedAt: new Date().toISOString()});
+            }).catch(function(e){ console.error('Firestore created update error:', e.message); });
+          }
           res.writeHead(200); res.end(JSON.stringify({success: true}));
         });
       }
@@ -459,7 +551,25 @@ var server = http.createServer(function(req, res) {
           update6.installateur = null; update6.rdv = null; update6.notes = ''; update6.imported = false;
           update6.createdAt = new Date().toISOString();
           return firebasePost('/commandes_axonaut.json', update6);
-        }).then(function() {
+        }).then(function(existing) {
+          // Mettre a jour aussi Firestore si montant change
+          if (montant6 > 0) {
+            var refSearch = ref6;
+            firestoreQuery('ref', refSearch).then(function(fsDoc) {
+              if (!fsDoc) return firestoreQuery('axonautId', String(companyId6));
+              return fsDoc;
+            }).then(function(fsDoc) {
+              if (fsDoc) {
+                var fsUpdate = {
+                  montant: montant6,
+                  updatedAt: new Date().toISOString()
+                };
+                if (borneTxt6) fsUpdate.borne = borneTxt6;
+                if (isSigned) fsUpdate.statut = 'new';
+                return firestoreUpdate(fsDoc.id, fsUpdate);
+              }
+            }).catch(function(e){ console.error('Firestore montant update error:', e.message); });
+          }
           res.writeHead(200); res.end(JSON.stringify({success: true, signed: isSigned}));
         });
       }
@@ -690,6 +800,60 @@ var server = http.createServer(function(req, res) {
 
   res.writeHead(404); res.end(JSON.stringify({error: 'Route inconnue'}));
 });
+
+  // ═══ SYNC MONTANTS ═══
+  if (req.url === '/sync-montants' && req.method === 'GET') {
+    console.log('=== SYNC MONTANTS START ===');
+    var axOptions2 = {
+      hostname: 'app.axonaut.com',
+      path: '/api/v1/quotations?limit=100',
+      method: 'GET',
+      headers: { 'apiKey': '619080bd85898f22780e9d463e107e8ac30647619080' }
+    };
+    var axReq2 = https.request(axOptions2, function(axRes2) {
+      var d2 = '';
+      axRes2.on('data', function(c){ d2 += c; });
+      axRes2.on('end', function() {
+        try {
+          var quotations2 = JSON.parse(d2);
+          if (!Array.isArray(quotations2)) {
+            res.writeHead(400); res.end(JSON.stringify({error: 'Axonaut error', raw: d2.slice(0,200)}));
+            return;
+          }
+          console.log('Quotations fetched:', quotations2.length);
+          var updates2 = quotations2.map(function(q) {
+            var ref2 = 'AX-' + (q.number || q.id);
+            var montant2 = Number(q.pre_tax_amount || q.total_amount || q.amount || 0);
+            var cid2 = String(q.company_id || '');
+            if (!montant2) return Promise.resolve(null);
+            return firestoreQuery('ref', ref2).then(function(fsDoc) {
+              if (!fsDoc && cid2) return firestoreQuery('axonautId', cid2);
+              return fsDoc;
+            }).then(function(fsDoc) {
+              if (!fsDoc) return null;
+              var upd2 = { montant: montant2, updatedAt: new Date().toISOString() };
+              var titre2 = (q.title || q.subject || '').replace(/<[^>]*>/g, '').trim();
+              if (titre2 && titre2.length > 2) upd2.borne = titre2;
+              console.log('Update:', fsDoc.id, 'montant:', montant2);
+              return firestoreUpdate(fsDoc.id, upd2);
+            });
+          });
+          Promise.all(updates2).then(function(results2) {
+            var updated2 = results2.filter(function(r){ return r !== null; }).length;
+            console.log('=== SYNC DONE:', updated2, 'updated ===');
+            res.writeHead(200);
+            res.end(JSON.stringify({ success: true, total: quotations2.length, updated: updated2 }));
+          }).catch(function(e){ res.writeHead(500); res.end(JSON.stringify({error: e.message})); });
+        } catch(e) {
+          res.writeHead(500); res.end(JSON.stringify({error: e.message}));
+        }
+      });
+    });
+    axReq2.on('error', function(e){ res.writeHead(500); res.end(JSON.stringify({error: e.message})); });
+    axReq2.end();
+    return;
+  }
+
 
 server.listen(PORT, function() {
   console.log('PowerRecharge API v7 demarree sur port', PORT);
