@@ -798,62 +798,37 @@ var server = http.createServer(function(req, res) {
     return;
   }
 
-  res.writeHead(404); res.end(JSON.stringify({error: 'Route inconnue'}));
-});
 
   // ═══ SYNC MONTANTS ═══
   if (req.url === '/sync-montants' && req.method === 'GET') {
-    console.log('=== SYNC MONTANTS START ===');
-    var axOptions2 = {
-      hostname: 'app.axonaut.com',
-      path: '/api/v1/quotations?limit=100',
-      method: 'GET',
-      headers: { 'apiKey': '619080bd85898f22780e9d463e107e8ac30647619080' }
-    };
-    var axReq2 = https.request(axOptions2, function(axRes2) {
-      var d2 = '';
-      axRes2.on('data', function(c){ d2 += c; });
-      axRes2.on('end', function() {
+    console.log('SYNC MONTANTS');
+    var axOptS = { hostname:'app.axonaut.com', path:'/api/v1/quotations?limit=100', method:'GET', headers:{'apiKey':'619080bd85898f22780e9d463e107e8ac30647619080'} };
+    https.request(axOptS, function(axResS){
+      var dS=''; axResS.on('data',function(c){dS+=c;}); axResS.on('end',function(){
         try {
-          var quotations2 = JSON.parse(d2);
-          if (!Array.isArray(quotations2)) {
-            res.writeHead(400); res.end(JSON.stringify({error: 'Axonaut error', raw: d2.slice(0,200)}));
-            return;
-          }
-          console.log('Quotations fetched:', quotations2.length);
-          var updates2 = quotations2.map(function(q) {
-            var ref2 = 'AX-' + (q.number || q.id);
-            var montant2 = Number(q.pre_tax_amount || q.total_amount || q.amount || 0);
-            var cid2 = String(q.company_id || '');
-            if (!montant2) return Promise.resolve(null);
-            return firestoreQuery('ref', ref2).then(function(fsDoc) {
-              if (!fsDoc && cid2) return firestoreQuery('axonautId', cid2);
-              return fsDoc;
-            }).then(function(fsDoc) {
-              if (!fsDoc) return null;
-              var upd2 = { montant: montant2, updatedAt: new Date().toISOString() };
-              var titre2 = (q.title || q.subject || '').replace(/<[^>]*>/g, '').trim();
-              if (titre2 && titre2.length > 2) upd2.borne = titre2;
-              console.log('Update:', fsDoc.id, 'montant:', montant2);
-              return firestoreUpdate(fsDoc.id, upd2);
+          var qs=JSON.parse(dS); if(!Array.isArray(qs)){res.writeHead(400);res.end('{}');return;}
+          var ups=qs.map(function(q){
+            var r='AX-'+(q.number||q.id), m=Number(q.pre_tax_amount||q.total_amount||0), c=String(q.company_id||'');
+            if(!m) return Promise.resolve(null);
+            return firestoreQuery('ref',r).then(function(d){return d||firestoreQuery('axonautId',c);}).then(function(d){
+              if(!d) return null;
+              var u={montant:m,updatedAt:new Date().toISOString()};
+              var t=(q.title||'').replace(/<[^>]*>/g,'').trim(); if(t&&t.length>2) u.borne=t;
+              return firestoreUpdate(d.id,u);
             });
           });
-          Promise.all(updates2).then(function(results2) {
-            var updated2 = results2.filter(function(r){ return r !== null; }).length;
-            console.log('=== SYNC DONE:', updated2, 'updated ===');
-            res.writeHead(200);
-            res.end(JSON.stringify({ success: true, total: quotations2.length, updated: updated2 }));
-          }).catch(function(e){ res.writeHead(500); res.end(JSON.stringify({error: e.message})); });
-        } catch(e) {
-          res.writeHead(500); res.end(JSON.stringify({error: e.message}));
-        }
+          Promise.all(ups).then(function(rs){
+            var n=rs.filter(function(r){return r!==null;}).length;
+            res.writeHead(200); res.end(JSON.stringify({success:true,total:qs.length,updated:n}));
+          }).catch(function(e){res.writeHead(500);res.end(JSON.stringify({error:e.message}));});
+        } catch(e){res.writeHead(500);res.end(JSON.stringify({error:e.message}));}
       });
-    });
-    axReq2.on('error', function(e){ res.writeHead(500); res.end(JSON.stringify({error: e.message})); });
-    axReq2.end();
+    }).on('error',function(e){res.writeHead(500);res.end(JSON.stringify({error:e.message}));}).end();
     return;
   }
 
+  res.writeHead(404); res.end(JSON.stringify({error: 'Route inconnue'}));
+});
 
 server.listen(PORT, function() {
   console.log('PowerRecharge API v7 demarree sur port', PORT);
