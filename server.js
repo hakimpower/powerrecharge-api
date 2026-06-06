@@ -806,8 +806,13 @@ var server = http.createServer(function(req, res) {
     https.request(axS,function(aRes){
       var d=''; aRes.on('data',function(c){d+=c;}); aRes.on('end',function(){
         try{
-          var qs=JSON.parse(d);
-          if(!Array.isArray(qs)){res.writeHead(400);res.end(JSON.stringify({error:'Axonaut error'}));return;}
+          var raw=JSON.parse(d);
+          // Axonaut peut retourner un tableau direct ou {data:[...]} ou {quotations:[...]}
+          var qs=Array.isArray(raw) ? raw : (raw.data||raw.quotations||raw.results||[]);
+          if(!qs.length && !Array.isArray(raw)){
+            console.log('Axonaut raw response:', JSON.stringify(raw).slice(0,300));
+            res.writeHead(400);res.end(JSON.stringify({error:'Format inattendu',raw:JSON.stringify(raw).slice(0,200)}));return;
+          }
           var result=qs.map(function(q){
             var num=String(q.number||q.id||'');
             return {num:num,ref:'AX-'+num,refHash:'AX-#'+num,montant:Number(q.pre_tax_amount||q.total_amount||0),companyId:String(q.company_id||''),borne:(q.title||q.subject||'').replace(/<[^>]*>/g,'').trim()};
