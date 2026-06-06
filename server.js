@@ -799,6 +799,65 @@ var server = http.createServer(function(req, res) {
   }
 
 
+
+  // ═══ SYNC MONTANTS DEPUIS ZAPIER ═══
+  if (req.url === '/sync-montants-zap' && req.method === 'POST') {
+    res.setHeader('Access-Control-Allow-Origin','*');
+    var body = '';
+    req.on('data', function(c){ body += c; });
+    req.on('end', function() {
+      try {
+        var payload = JSON.parse(body);
+        // Zapier envoie les devis dans payload.quotations (tableau JSON stringifie ou objet)
+        var quotations = payload.quotations;
+        if (typeof quotations === 'string') quotations = JSON.parse(quotations);
+        if (!Array.isArray(quotations)) quotations = [quotations];
+
+        console.log('Sync Zap: received', quotations.length, 'quotations');
+        var updated = 0;
+
+        var chain = Promise.resolve();
+        quotations.forEach(function(q) {
+          chain = chain.then(function() {
+            var num   = String(q.number || q.id || q.num || '');
+            var ref1  = 'AX-' + num;
+            var ref2  = 'AX-#' + num;
+            var mont  = Number(q.pre_tax_amount || q.total_amount || q.montant || 0);
+            var cid   = String(q.company_id || q.companyId || '');
+            if (!mont || !num) return Promise.resolve();
+
+            return firestoreQuery('ref', ref1).then(function(d) {
+              return d || firestoreQuery('ref', ref2);
+            }).then(function(d) {
+              return d || (cid ? firestoreQuery('axonautId', cid) : null);
+            }).then(function(d) {
+              if (!d) return;
+              var upd = { montant: mont, updatedAt: new Date().toISOString() };
+              var titre = (q.title || q.subject || q.borne || '').replace(/<[^>]*>/g,'').trim();
+              if (titre && titre.length > 2) upd.borne = titre;
+              updated++;
+              console.log('Updated:', d.id, 'montant:', mont);
+              return firestoreUpdate(d.id, upd);
+            });
+          });
+        });
+
+        chain.then(function() {
+          res.writeHead(200);
+          res.end(JSON.stringify({ success: true, updated: updated }));
+        }).catch(function(e) {
+          res.writeHead(500);
+          res.end(JSON.stringify({ error: e.message }));
+        });
+
+      } catch(e) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'JSON invalide: ' + e.message }));
+      }
+    });
+    return;
+  }
+
   // ═══ SYNC MONTANTS ═══
   if (req.url === '/sync-montants' && req.method === 'GET') {
     res.setHeader('Access-Control-Allow-Origin','*');
