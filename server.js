@@ -769,6 +769,31 @@ var server = http.createServer(function(req, res) {
 
       console.log('Lead:', lead.client, '|', lead.email, '|', lead.tel, '|', lead.cp);
 
+      // Recuperer la ville depuis le code postal via API gouvernementale
+      function getVilleFromCP(cp) {
+        return new Promise(function(resolve) {
+          if (!cp) { resolve(''); return; }
+          var opts = {
+            hostname: 'geo.api.gouv.fr',
+            path: '/communes?codePostal=' + cp + '&fields=nom&limit=1',
+            method: 'GET'
+          };
+          var req2 = https.request(opts, function(res2) {
+            var d = '';
+            res2.on('data', function(c){ d += c; });
+            res2.on('end', function() {
+              try {
+                var data = JSON.parse(d);
+                resolve(data && data.length > 0 ? data[0].nom : '');
+              } catch(e) { resolve(''); }
+            });
+          });
+          req2.on('error', function(){ resolve(''); });
+          req2.setTimeout(5000, function(){ req2.destroy(); resolve(''); });
+          req2.end();
+        });
+      }
+
       // Verifier si lead existe deja par email
       findDossierByEmail(lead.email).then(function(existing) {
         if (existing) {
@@ -776,8 +801,15 @@ var server = http.createServer(function(req, res) {
           res.writeHead(200); res.end(JSON.stringify({success: true, action: 'already_exists'}));
           return;
         }
-        return firebasePost('/commandes_axonaut.json', lead).then(function() {
-          console.log('Lead cree:', lead.client);
+        return getVilleFromCP(lead.cp).then(function(ville) {
+          if (ville) {
+            lead.ville = ville;
+            lead.dept  = lead.cp ? lead.cp.slice(0, 2) : '';
+            console.log('Ville resolue:', ville, 'pour CP:', lead.cp);
+          }
+          return firebasePost('/commandes_axonaut.json', lead);
+        }).then(function() {
+          console.log('Lead cree:', lead.client, '| Ville:', lead.ville);
           // Notif admin - nouveau lead
           sendZapierNotif(ZAPIER.nouveau_prospect, {
             client:  lead.client,
