@@ -413,11 +413,20 @@ var server = http.createServer(function(req, res) {
               res.writeHead(200); res.end(JSON.stringify({success: true}));
             }).catch(function(e){ res.writeHead(200); res.end(JSON.stringify({error: e.message})); });
           } else {
-            // Prospect pas encore cree - sauvegarder l'adresse en attente
-            console.log('Prospect non trouve - adresse en attente pour companyId:', companyId);
-            addrData.companyId = String(companyId);
-            firebasePost('/pending_addresses.json', addrData).then(function() {
-              res.writeHead(200); res.end(JSON.stringify({success: true, message: 'Adresse en attente'}));
+            // Pas trouve dans RDB - chercher dans Firestore
+            checkFirestoreDoublon('', String(companyId)).then(function(fsDoc) {
+              if (fsDoc) {
+                console.log('Adresse mise a jour dans Firestore pour companyId:', companyId);
+                return firestoreUpdate(fsDoc.doc.id, addrData).then(function() {
+                  res.writeHead(200); res.end(JSON.stringify({success: true, source: 'firestore'}));
+                });
+              }
+              // Vraiment pas trouve - mettre en attente
+              console.log('Prospect non trouve - adresse en attente pour companyId:', companyId);
+              addrData.companyId = String(companyId);
+              return firebasePost('/pending_addresses.json', addrData).then(function() {
+                res.writeHead(200); res.end(JSON.stringify({success: true, message: 'Adresse en attente'}));
+              });
             }).catch(function(e){ res.writeHead(200); res.end(JSON.stringify({error: e.message})); });
           }
         }).catch(function(e){ res.writeHead(200); res.end(JSON.stringify({error: e.message})); });
@@ -483,12 +492,22 @@ var server = http.createServer(function(req, res) {
           if (existing) {
             return firebasePatch('/commandes_axonaut/' + existing.key + '.json', update5);
           }
-          // Creer depuis devis si prospect pas encore cree
-          update5.client = companyName5; update5.axonautId = String(companyId5 || '');
-          update5.tel = ''; update5.email = ''; update5.adresse = ''; update5.ville = ''; update5.cp = ''; update5.dept = '';
-          update5.installateur = null; update5.rdv = null; update5.notes = ''; update5.imported = false;
-          update5.createdAt = new Date().toISOString();
-          return firebasePost('/commandes_axonaut.json', update5);
+          // Verifier aussi dans Firestore avant de creer
+          return checkFirestoreDoublon('', String(companyId5)).then(function(fsDoc) {
+            if (fsDoc) {
+              console.log('Doublon Firestore (quotation.created) pour', companyName5, '- mise a jour montant uniquement');
+              var fsUpdate = {ref: ref5, updatedAt: new Date().toISOString()};
+              if (montant5) fsUpdate.montant = montant5;
+              if (borneTxt5) fsUpdate.borne = borneTxt5;
+              return firestoreUpdate(fsDoc.doc.id, fsUpdate);
+            }
+            // Vraiment nouveau - creer
+            update5.client = companyName5; update5.axonautId = String(companyId5 || '');
+            update5.tel = ''; update5.email = ''; update5.adresse = ''; update5.ville = ''; update5.cp = ''; update5.dept = '';
+            update5.installateur = null; update5.rdv = null; update5.notes = ''; update5.imported = false;
+            update5.createdAt = new Date().toISOString();
+            return firebasePost('/commandes_axonaut.json', update5);
+          });
         }).then(function() {
           // Mettre a jour Firestore aussi
           if (montant5 > 0) {
