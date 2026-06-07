@@ -856,7 +856,9 @@ var server = http.createServer(function(req, res) {
             borne:   'Lead Facebook - Formulaire non rempli'
           });
           res.writeHead(200); res.end(JSON.stringify({success: true, action: 'created'}));
-        });
+          });      // close getVilleFromCP.then
+          });      // close telCheck.then
+          });      // close checkFirestoreDoublon.then
       }).catch(function(e) {
         console.error('Lead error:', e.message);
         res.writeHead(200); res.end(JSON.stringify({success: false, error: e.message}));
