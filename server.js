@@ -17,6 +17,20 @@ const FIREBASE_PROJECT = 'powerrecharge-admin';
 const FIREBASE_API_KEY = 'AIzaSyAIUZttIylRrTBb3BuQsMVJzYgIqu35hc4';
 
 // Rechercher un dossier dans Firestore par champ
+
+function firestoreCreate(data) {
+  var url = FIRESTORE_BASE + '/dossiers?key=' + FIREBASE_API_KEY;
+  var fields = {};
+  Object.keys(data).forEach(function(k) {
+    var v = data[k];
+    if (typeof v === 'number')      fields[k] = {doubleValue: v};
+    else if (typeof v === 'boolean') fields[k] = {booleanValue: v};
+    else if (v === null)             fields[k] = {nullValue: null};
+    else                             fields[k] = {stringValue: String(v)};
+  });
+  return firestoreFetch(url, 'POST', {fields: fields});
+}
+
 function firestoreQuery(field, value) {
   return new Promise(function(resolve) {
     var body = JSON.stringify({
@@ -991,6 +1005,58 @@ var server = http.createServer(function(req, res) {
       res.end(JSON.stringify({error: 'Timeout'}));
     });
     proxyReq.end();
+    return;
+  }
+
+
+  // ═══ GOOGLE ADS WEBHOOK ═══
+  if (req.url === '/google-ads-webhook' && req.method === 'POST') {
+    res.setHeader('Access-Control-Allow-Origin','*');
+    var body = '';
+    req.on('data', function(c){ body += c; });
+    req.on('end', function() {
+      try {
+        var data = JSON.parse(body);
+        var lead = {
+          client:    (data.client || data.full_name || data.name || '').trim(),
+          tel:       (data.tel || data.phone || data.phone_number || '').trim(),
+          email:     (data.email || '').trim().toLowerCase(),
+          cp:        (data.cp || data.zip_code || data.postal_code || '').trim(),
+          ville:     '',
+          dept:      '',
+          statut:    'prospect',
+          source:    'google_ads',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        if (lead.cp) lead.dept = lead.cp.slice(0,2);
+        if (!lead.client) { res.writeHead(400); res.end(JSON.stringify({error:'Nom requis'})); return; }
+
+        console.log('Google Ads lead:', lead.client, lead.tel);
+
+        // Verifier doublon
+        checkFirestoreDoublon(lead.email, '').then(function(existing) {
+          if (existing) {
+            console.log('Doublon Google Ads:', lead.client);
+            res.writeHead(200); res.end(JSON.stringify({success:true, action:'already_exists'}));
+            return;
+          }
+          // Résolution ville
+          return getVilleFromCP(lead.cp).then(function(ville) {
+            if (ville) { lead.ville = ville; }
+            return firestoreCreate(lead);
+          }).then(function() {
+            console.log('Google Ads lead créé:', lead.client, '|', lead.ville);
+            res.writeHead(200); res.end(JSON.stringify({success:true, action:'created'}));
+          });
+        }).catch(function(e) {
+          console.error('Google Ads error:', e.message);
+          res.writeHead(500); res.end(JSON.stringify({error:e.message}));
+        });
+      } catch(e) {
+        res.writeHead(400); res.end(JSON.stringify({error:'JSON invalide'}));
+      }
+    });
     return;
   }
 
