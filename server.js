@@ -202,6 +202,29 @@ function findDossierByRef(ref) {
   });
 }
 
+
+function checkFirestoreDoublon(email, axonautId) {
+  var checks = [];
+  if (email && email.length > 3) {
+    checks.push(
+      firestoreQuery('email', email).then(function(d) {
+        return d ? {source:'firestore', field:'email', doc:d} : null;
+      }).catch(function(){ return null; })
+    );
+  }
+  if (axonautId && axonautId.length > 0) {
+    checks.push(
+      firestoreQuery('axonautId', String(axonautId)).then(function(d) {
+        return d ? {source:'firestore', field:'axonautId', doc:d} : null;
+      }).catch(function(){ return null; })
+    );
+  }
+  if (!checks.length) return Promise.resolve(null);
+  return Promise.all(checks).then(function(results) {
+    return results.find(function(r){ return r !== null; }) || null;
+  });
+}
+
 function findDossierByEmail(email) {
   return firebaseGet('/commandes_axonaut.json').then(function(data) {
     if (!data || !email) return null;
