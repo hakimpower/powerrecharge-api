@@ -19,16 +19,34 @@ const FIREBASE_API_KEY = 'AIzaSyAIUZttIylRrTBb3BuQsMVJzYgIqu35hc4';
 // Rechercher un dossier dans Firestore par champ
 
 function firestoreCreate(data) {
-  var url = FIRESTORE_BASE + '/dossiers?key=' + FIREBASE_API_KEY;
-  var fields = {};
-  Object.keys(data).forEach(function(k) {
-    var v = data[k];
-    if (typeof v === 'number')      fields[k] = {doubleValue: v};
-    else if (typeof v === 'boolean') fields[k] = {booleanValue: v};
-    else if (v === null)             fields[k] = {nullValue: null};
-    else                             fields[k] = {stringValue: String(v)};
+  return new Promise(function(resolve, reject) {
+    var fields = {};
+    Object.keys(data).forEach(function(k) {
+      var v = data[k];
+      if (typeof v === 'number')       fields[k] = {doubleValue: v};
+      else if (typeof v === 'boolean') fields[k] = {booleanValue: v};
+      else if (v === null)             fields[k] = {nullValue: null};
+      else                             fields[k] = {stringValue: String(v)};
+    });
+    var body = JSON.stringify({fields: fields});
+    var options = {
+      hostname: FIRESTORE_URL,
+      path: '/v1/projects/' + FIREBASE_PROJECT + '/databases/(default)/documents/dossiers?key=' + FIREBASE_API_KEY,
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body)}
+    };
+    var req = https.request(options, function(res) {
+      var d = '';
+      res.on('data', function(c){ d += c; });
+      res.on('end', function(){
+        console.log('firestoreCreate status:', res.statusCode, d.slice(0,100));
+        if (res.statusCode >= 200 && res.statusCode < 300) resolve(d);
+        else reject(new Error('Firestore create error: ' + res.statusCode + ' ' + d.slice(0,100)));
+      });
+    });
+    req.on('error', reject);
+    req.end(body);
   });
-  return firestoreFetch(url, 'POST', {fields: fields});
 }
 
 function firestoreQuery(field, value) {
