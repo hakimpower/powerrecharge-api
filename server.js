@@ -840,30 +840,30 @@ var server = http.createServer(function(req, res) {
           res.writeHead(200); res.end(JSON.stringify({success: true, action: 'already_exists'}));
           return Promise.resolve();
         }
-        // Verifier aussi dans Firestore par email ET par telephone
-        return checkFirestoreDoublon(lead.email, '').then(function(fsDoc) {
+        // Verifier doublon Firestore uniquement si email valide
+        var emailCheck = lead.email && lead.email.length > 3
+          ? checkFirestoreDoublon(lead.email, '')
+          : Promise.resolve(null);
+        return emailCheck.then(function(fsDoc) {
           if (fsDoc) {
-            console.log('Lead deja existant (Firestore):', lead.client);
+            console.log('Lead deja existant (Firestore email):', lead.client);
             res.writeHead(200); res.end(JSON.stringify({success: true, action: 'already_exists_firestore'}));
             return;
           }
-          // Verifier par telephone si email vide
-          var telCheck = lead.tel ? firestoreQuery('tel', lead.tel) : Promise.resolve(null);
-          return telCheck.then(function(telDoc) {
-            if (telDoc) {
-              console.log('Lead deja existant (tel):', lead.client);
-              res.writeHead(200); res.end(JSON.stringify({success: true, action: 'already_exists_tel'}));
-              return;
-            }
-            return getVilleFromCP(lead.cp).then(function(ville) {
+          // Verifier par telephone uniquement si email ET tel identiques (doublon strict)
+          // On ne bloque plus sur le seul telephone pour eviter les faux positifs
+          return getVilleFromCP(lead.cp).then(function(ville) {
           if (ville) {
             lead.ville = ville;
             lead.dept  = lead.cp ? lead.cp.slice(0, 2) : '';
             console.log('Ville resolue:', ville, 'pour CP:', lead.cp);
           }
-          return firebasePost('/commandes_axonaut.json', lead);
+          // Sauvegarder directement dans Firestore
+          lead.createdAt = new Date().toISOString();
+          lead.updatedAt = new Date().toISOString();
+          return firestoreCreate(lead);
             }).then(function() {
-              console.log('Lead cree:', lead.client, '| Ville:', lead.ville);
+              console.log('Lead FB cree dans Firestore:', lead.client, '| Ville:', lead.ville);
           // Notif admin - nouveau lead
           sendZapierNotif(ZAPIER.nouveau_prospect, {
             client:  lead.client,
@@ -876,8 +876,7 @@ var server = http.createServer(function(req, res) {
           });
           res.writeHead(200); res.end(JSON.stringify({success: true, action: 'created'}));
           });      // close getVilleFromCP.then
-          });      // close telCheck.then
-          });      // close checkFirestoreDoublon.then
+          });      // close emailCheck.then
       }).catch(function(e) {
         console.error('Lead error:', e.message);
         res.writeHead(200); res.end(JSON.stringify({success: false, error: e.message}));
