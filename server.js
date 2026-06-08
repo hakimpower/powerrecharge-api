@@ -1175,6 +1175,53 @@ var server = http.createServer(function(req, res) {
     return;
   }
 
+
+  // ═══ BULK IMPORT LEADS ═══
+  if (req.url === '/bulk-import' && req.method === 'POST') {
+    res.setHeader('Access-Control-Allow-Origin','*');
+    parseBody(req).then(function(body) {
+      var leads = body.leads || [];
+      if (!leads.length) { res.writeHead(400); res.end(JSON.stringify({error:'No leads'})); return; }
+      var imported = 0, errors = 0;
+      var chain = Promise.resolve();
+      leads.forEach(function(lead) {
+        chain = chain.then(function() {
+          var doc = {
+            client:        lead.client || '',
+            email:         (lead.email || '').toLowerCase(),
+            tel:           lead.tel || '',
+            cp:            lead.cp || '',
+            dept:          lead.cp ? lead.cp.slice(0,2) : '',
+            ville:         lead.ville || '',
+            type_logement: lead.type_logement || '',
+            statut:        'lead',
+            source:        'Facebook Lead Ads',
+            ref:           'FB-' + Date.now(),
+            adresse:       '', borne:'', notes:'', montant:0,
+            imported:      false,
+            createdAt:     new Date().toISOString(),
+            updatedAt:     new Date().toISOString()
+          };
+          return getVilleFromCP(doc.cp).then(function(ville) {
+            if (ville) { doc.ville = ville; doc.dept = doc.cp.slice(0,2); }
+            return firestoreCreate(doc);
+          }).then(function() {
+            imported++;
+            console.log('Bulk import OK:', doc.client);
+          }).catch(function(e) {
+            errors++;
+            console.error('Bulk import error:', doc.client, e.message);
+          });
+        });
+      });
+      chain.then(function() {
+        res.writeHead(200);
+        res.end(JSON.stringify({success:true, imported:imported, errors:errors}));
+      });
+    });
+    return;
+  }
+
   // ═══ SYNC MONTANTS ═══
   if (req.url === '/sync-montants' && req.method === 'GET') {
     res.setHeader('Access-Control-Allow-Origin','*');
