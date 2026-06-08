@@ -1059,6 +1059,81 @@ var server = http.createServer(function(req, res) {
     return;
   }
 
+
+  // ═══ IMPORT LEADS RDB → FIRESTORE ═══
+  if (req.url === '/import-rdb-leads' && req.method === 'GET') {
+    res.setHeader('Access-Control-Allow-Origin','*');
+
+    firebaseGet('/commandes_axonaut.json').then(function(data) {
+      if (!data) {
+        res.writeHead(200);
+        res.end(JSON.stringify({success:true, imported:0, message:'RDB vide'}));
+        return;
+      }
+
+      var keys = Object.keys(data);
+      var toImport = keys.filter(function(k) {
+        var d = data[k];
+        return d && d.client && !d.imported;
+      });
+
+      console.log('RDB leads a importer:', toImport.length, '/', keys.length);
+
+      var imported = 0;
+      var errors = 0;
+      var chain = Promise.resolve();
+
+      toImport.forEach(function(key) {
+        chain = chain.then(function() {
+          var lead = data[key];
+          // Verifier si deja dans Firestore
+          var emailCheck = lead.email && lead.email.length > 3
+            ? checkFirestoreDoublon(lead.email, '')
+            : Promise.resolve(null);
+
+          return emailCheck.then(function(existing) {
+            if (existing) {
+              console.log('Deja dans Firestore:', lead.client);
+              // Marquer comme importé dans RDB
+              return firebasePatch('/commandes_axonaut/' + key + '.json', {imported: true});
+            }
+            // Creer dans Firestore
+            var doc = Object.assign({}, lead, {
+              imported: true,
+              updatedAt: new Date().toISOString()
+            });
+            return firestoreCreate(doc).then(function() {
+              imported++;
+              console.log('Import OK:', lead.client);
+              return firebasePatch('/commandes_axonaut/' + key + '.json', {imported: true});
+            });
+          }).catch(function(e) {
+            errors++;
+            console.error('Import error pour', lead.client, ':', e.message);
+          });
+        });
+      });
+
+      chain.then(function() {
+        res.writeHead(200);
+        res.end(JSON.stringify({
+          success: true,
+          total: toImport.length,
+          imported: imported,
+          errors: errors
+        }));
+      }).catch(function(e) {
+        res.writeHead(500);
+        res.end(JSON.stringify({error: e.message}));
+      });
+
+    }).catch(function(e) {
+      res.writeHead(500);
+      res.end(JSON.stringify({error: e.message}));
+    });
+    return;
+  }
+
   // ═══ SYNC MONTANTS ═══
   if (req.url === '/sync-montants' && req.method === 'GET') {
     res.setHeader('Access-Control-Allow-Origin','*');
