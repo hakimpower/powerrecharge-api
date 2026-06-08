@@ -495,10 +495,15 @@ var server = http.createServer(function(req, res) {
           // Verifier aussi dans Firestore avant de creer
           return checkFirestoreDoublon('', String(companyId5)).then(function(fsDoc) {
             if (fsDoc) {
-              console.log('Doublon Firestore (quotation.created) pour', companyName5, '- mise a jour montant uniquement');
+              console.log('Doublon Firestore (quotation.created) pour', companyName5, '- mise a jour montant');
               var fsUpdate = {ref: ref5, updatedAt: new Date().toISOString()};
               if (montant5) fsUpdate.montant = montant5;
               if (borneTxt5) fsUpdate.borne = borneTxt5;
+              // Si le dossier etait un lead FB, le passer en prospect
+              if (fsDoc.data && fsDoc.data.statut === 'lead') {
+                fsUpdate.statut = 'prospect';
+                console.log('Lead FB converti en prospect:', companyName5);
+              }
               return firestoreUpdate(fsDoc.doc.id, fsUpdate);
             }
             // Vraiment nouveau - creer
