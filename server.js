@@ -898,7 +898,25 @@ var server = http.createServer(function(req, res) {
           : Promise.resolve(null);
         return emailCheck.then(function(fsDoc) {
           if (fsDoc) {
-            console.log('Lead deja existant (Firestore email):', lead.client);
+            var existingStatut = fsDoc.doc && fsDoc.doc.data ? fsDoc.doc.data.statut : '';
+            // Si c'etait un lead FB → passer en prospect avec les nouvelles infos
+            if (existingStatut === 'lead') {
+              console.log('Lead FB converti en prospect via formulaire:', lead.client, '| email:', lead.email);
+              var update = {
+                statut:    'prospect',
+                updatedAt: new Date().toISOString()
+              };
+              // Mettre a jour avec les infos du formulaire (plus completes)
+              if (lead.client) update.client = lead.client;
+              if (lead.tel)    update.tel    = lead.tel;
+              if (lead.adresse) update.adresse = lead.adresse;
+              if (lead.cp)     { update.cp = lead.cp; update.dept = lead.cp.slice(0,2); }
+              if (lead.type_logement) update.type_logement = lead.type_logement;
+              return firestoreUpdate(fsDoc.doc.id, update).then(function() {
+                res.writeHead(200); res.end(JSON.stringify({success: true, action: 'lead_converted_to_prospect'}));
+              });
+            }
+            console.log('Dossier deja existant (Firestore email):', lead.client);
             res.writeHead(200); res.end(JSON.stringify({success: true, action: 'already_exists_firestore'}));
             return;
           }
