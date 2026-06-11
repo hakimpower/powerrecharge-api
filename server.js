@@ -293,6 +293,9 @@ var ZAPIER = {
   nouveau_prospect:  'https://hooks.zapier.com/hooks/catch/21452394/4bkfyuv/',
   mission_affectee:  'https://hooks.zapier.com/hooks/catch/21452394/4bkfd5b/',
   rdv_client:        'https://hooks.zapier.com/hooks/catch/21452394/4bkfrne/',
+  rdv_installation:  'https://hooks.zapier.com/hooks/catch/21452394/4bkfrne/',
+  rdv_previsit:      'https://hooks.zapier.com/hooks/catch/21452394/43tp5em/',
+  rdv_sav:           'https://hooks.zapier.com/hooks/catch/21452394/43tns35/',
   rdv_admin:         'https://hooks.zapier.com/hooks/catch/21452394/4bkfs78/',
   installation_client: 'https://hooks.zapier.com/hooks/catch/21452394/4bkfzho/',
   installation_admin:  'https://hooks.zapier.com/hooks/catch/21452394/4bkfkye/'
@@ -768,8 +771,14 @@ var server = http.createServer(function(req, res) {
           notes:        body.notes || ''
         });
       } else if (type === 'rdv_confirme') {
-        // Notif 3 - RDV confirmé → Client
-        sendZapierNotif(ZAPIER.rdv_client, {
+        // Choisir le hook selon le type de RDV
+        var rdvType = body.rdvType || 'install';
+        var rdvHook = rdvType === 'previsit' ? ZAPIER.rdv_previsit
+                    : rdvType === 'sav'      ? ZAPIER.rdv_sav
+                    :                         ZAPIER.rdv_installation;
+        console.log('RDV type:', rdvType, '→', rdvHook);
+        // Notif → Client (selon type)
+        sendZapierNotif(rdvHook, {
           client:       body.client,
           email:        body.email,
           tel:          body.tel,
@@ -778,10 +787,11 @@ var server = http.createServer(function(req, res) {
           borne:        body.borne,
           adresse:      body.adresse
         });
-        // Notif 4 - RDV confirmé → Admin
+        // Notif 4 - RDV confirmé → Admin (toujours)
         sendZapierNotif(ZAPIER.rdv_admin, {
           client:       body.client,
           rdv:          body.rdv,
+          rdvType:      rdvType,
           installateur: body.installateur,
           borne:        body.borne,
           adresse:      body.adresse,
