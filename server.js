@@ -550,20 +550,31 @@ var server = http.createServer(function(req, res) {
           if (existing) {
             return firebasePatch('/commandes_axonaut/' + existing.key + '.json', update5);
           }
-          // Verifier aussi dans Firestore avant de creer
+          // Verifier dans Firestore par axonautId, puis par email, puis par nom
+          var emailAxonaut = data.email || data.contact_email || '';
           return checkFirestoreDoublon('', String(companyId5)).then(function(fsDoc) {
+            if (!fsDoc && emailAxonaut) return checkFirestoreDoublon(emailAxonaut, '');
+            return fsDoc;
+          }).then(function(fsDoc) {
+            if (!fsDoc && companyName5) {
+              return firestoreQuery('client', companyName5).then(function(d){
+                return d?{source:'firestore',field:'client',doc:d}:null;
+              }).catch(function(){return null;});
+            }
+            return fsDoc;
+          }).then(function(fsDoc) {
             if (fsDoc) {
-              console.log('Doublon Firestore (quotation.created) pour', companyName5, '- mise a jour montant');
-              var fsUpdate = {ref: ref5, updatedAt: new Date().toISOString()};
+              console.log('Doublon Firestore (quotation.created) pour', companyName5, '- mise a jour');
+              var fsUpdate = {ref: ref5, axonautId: String(companyId5), updatedAt: new Date().toISOString()};
               if (montant5) fsUpdate.montant = montant5;
               if (borneTxt5) fsUpdate.borne = borneTxt5;
-              // Si le dossier etait un lead FB, le passer en prospect
               if (fsDoc.data && fsDoc.data.statut === 'lead') {
                 fsUpdate.statut = 'prospect';
                 console.log('Lead FB converti en prospect:', companyName5);
               }
               return firestoreUpdate(fsDoc.doc.id, fsUpdate);
             }
+          }).then(function(result) { if (result) return;
             // Vraiment nouveau - creer
             update5.client = companyName5; update5.axonautId = String(companyId5 || '');
             update5.tel = ''; update5.email = ''; update5.adresse = ''; update5.ville = ''; update5.cp = ''; update5.dept = '';
