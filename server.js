@@ -796,7 +796,10 @@ var server = http.createServer(function(req, res) {
           rdv:          body.rdv,
           installateur: body.installateur,
           borne:        body.borne,
-          adresse:      body.adresse
+          adresse:      body.adresse,
+          ville:        body.ville || '',
+          cp:           body.cp || '',
+          adresse_complete: (body.adresse || '') + (body.ville ? ', ' + body.ville : '') + (body.cp ? ' ' + body.cp : '')
         });
         // Notif 4 - RDV confirmé → Admin (toujours)
         sendZapierNotif(ZAPIER.rdv_admin, {
