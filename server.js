@@ -818,6 +818,9 @@ var server = http.createServer(function(req, res) {
           email:        body.email,
           borne:        body.borne,
           adresse:      body.adresse,
+          ville:        body.ville || '',
+          cp:           body.cp || '',
+          adresse_complete: (body.adresse || '') + (body.ville ? ', ' + body.ville : '') + (body.cp ? ' ' + body.cp : ''),
           installateur: body.installateur,
           date:         body.date || new Date().toLocaleDateString('fr-FR')
         });
@@ -826,8 +829,9 @@ var server = http.createServer(function(req, res) {
           client:       body.client,
           borne:        body.borne,
           adresse:      body.adresse,
-          ville:        body.ville,
+          ville:        body.ville || '',
           cp:           body.cp || '',
+          adresse_complete: (body.adresse || '') + (body.ville ? ', ' + body.ville : '') + (body.cp ? ' ' + body.cp : ''),
           installateur: body.installateur,
           date:         body.date || new Date().toLocaleDateString('fr-FR'),
           rapport:      body.rapport || ''
