@@ -725,7 +725,7 @@ var server = http.createServer(function(req, res) {
         if (existing) {
           // Mettre a jour avec les nouvelles infos (selective)
           var update = {updatedAt: new Date().toISOString()};
-          var fields = ['client','tel','email','adresse','ville','cp','dept','borne','axonautId'];
+          var fields = ['client','tel','email','adresse','ville','cp','dept','borne','axonautId','type_logement','montant','commentaire'];
           fields.forEach(function(f) {
             if (dossier[f] && dossier[f] !== '' && dossier[f] !== '0') update[f] = dossier[f];
           });
