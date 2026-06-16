@@ -605,9 +605,9 @@ var server = http.createServer(function(req, res) {
         var isCustomerAnswer = topic.includes('customeranswer');
         var hasSignature = sigDate6 && sigDate6 !== null && sigDate6 !== 'null'
                         && typeof sigDate6 === 'object' && sigDate6.date;
-        var isSigned = isCustomerAnswer
-                    && (statut6 === 'accepted' || statut6 === 'signed' || statut6 === 'won')
-                    && hasSignature;
+        // Signature electronique (customerAnswer + date) OU signature manuelle admin (statut signed/won)
+        var isSigned = (statut6 === 'accepted' || statut6 === 'signed' || statut6 === 'won')
+                    && (hasSignature || isCustomerAnswer || statut6 === 'signed' || statut6 === 'won');
         console.log('isSigned check - topic:', topic, '| statut:', statut6, '| hasSignature:', !!hasSignature, '| isSigned:', isSigned);
         var devisNum6 = data.number || data.id || '';
         var ref6 = 'AX-' + devisNum6;
@@ -627,7 +627,7 @@ var server = http.createServer(function(req, res) {
         }).then(function(existing) {
           var update6 = {
             ref: ref6,
-            statut: isSigned ? 'new' : 'prospect',
+            statut: isSigned ? 'devis_signe' : 'prospect',
             updatedAt: new Date().toISOString()
           };
           // Ne pas ecraser la borne si valeur par defaut ou vide
@@ -658,7 +658,7 @@ var server = http.createServer(function(req, res) {
                   updatedAt: new Date().toISOString()
                 };
                 if (borneTxt6) fsUpdate.borne = borneTxt6;
-                if (isSigned) fsUpdate.statut = 'new';
+                if (isSigned) fsUpdate.statut = 'devis_signe';
                 return firestoreUpdate(fsDoc.id, fsUpdate);
               }
             }).catch(function(e){ console.error('Firestore montant update error:', e.message); });
