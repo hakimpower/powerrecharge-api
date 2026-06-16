@@ -547,9 +547,12 @@ var server = http.createServer(function(req, res) {
           };
           if (borneTxt5) update5.borne = borneTxt5;
           if (montant5) update5.montant = montant5;
-          // Date d'envoi du devis = aujourd'hui ou date Axonaut si disponible
-          var devisEnvoyeLe = data.created_at || data.sent_at || new Date().toISOString().slice(0,10);
-          if (typeof devisEnvoyeLe === 'string' && devisEnvoyeLe.length > 10) devisEnvoyeLe = devisEnvoyeLe.slice(0,10);
+          // Date + heure d'arrivée du devis dans l'application
+          var nowArr = new Date();
+          var devisEnvoyeLe = (data.created_at || data.sent_at)
+            ? (data.created_at || data.sent_at).toString().replace('T',' ').slice(0,16)
+            : nowArr.getFullYear()+'-'+String(nowArr.getMonth()+1).padStart(2,'0')+'-'+String(nowArr.getDate()).padStart(2,'0')
+              +' '+String(nowArr.getHours()).padStart(2,'0')+':'+String(nowArr.getMinutes()).padStart(2,'0');
           update5.datesign = devisEnvoyeLe;
           if (existing) {
             return firebasePatch('/commandes_axonaut/' + existing.key + '.json', update5);
