@@ -732,6 +732,20 @@ var server = http.createServer(function(req, res) {
           console.log('Mise a jour prospect existant:', existing.data.client);
           firebasePatch('/commandes_axonaut/' + existing.key + '.json', update).then(function() {
             res.writeHead(200); res.end(JSON.stringify({success: true, action: 'updated'}));
+            // Sync vers Firestore : mettre a jour les champs pertinents (type_logement, borne, montant, etc.)
+            var fsUpdate = {updatedAt: new Date().toISOString()};
+            ['type_logement','borne','montant','commentaire','adresse','ville','cp','dept','tel','email','client'].forEach(function(f){
+              if (update[f] !== undefined && update[f] !== '' && update[f] !== 0) fsUpdate[f] = update[f];
+            });
+            var axId = dossier.axonautId || (existing.data && existing.data.axonautId) || '';
+            var refVal = dossier.ref || (existing.data && existing.data.ref) || '';
+            var findFs = axId ? firestoreQuery('axonautId', String(axId)) : Promise.resolve(null);
+            findFs.then(function(fsDoc){
+              if (!fsDoc && refVal) return firestoreQuery('ref', refVal);
+              return fsDoc;
+            }).then(function(fsDoc){
+              if (fsDoc) firestoreUpdate(fsDoc.id, fsUpdate);
+            }).catch(function(e){ console.warn('Firestore sync type_logement error:', e.message); });
           }).catch(function(e){ res.writeHead(200); res.end(JSON.stringify({error: e.message})); });
         } else {
           // Creer nouveau prospect
