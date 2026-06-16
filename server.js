@@ -547,6 +547,10 @@ var server = http.createServer(function(req, res) {
           };
           if (borneTxt5) update5.borne = borneTxt5;
           if (montant5) update5.montant = montant5;
+          // Date d'envoi du devis = aujourd'hui ou date Axonaut si disponible
+          var devisEnvoyeLe = data.created_at || data.sent_at || new Date().toISOString().slice(0,10);
+          if (typeof devisEnvoyeLe === 'string' && devisEnvoyeLe.length > 10) devisEnvoyeLe = devisEnvoyeLe.slice(0,10);
+          update5.datesign = devisEnvoyeLe;
           if (existing) {
             return firebasePatch('/commandes_axonaut/' + existing.key + '.json', update5);
           }
@@ -589,7 +593,7 @@ var server = http.createServer(function(req, res) {
               if (!fsDoc) return firestoreQuery('axonautId', String(companyId5));
               return fsDoc;
             }).then(function(fsDoc) {
-              if (fsDoc) firestoreUpdate(fsDoc.id, {montant: montant5, ref: ref5, updatedAt: new Date().toISOString()});
+              if (fsDoc) firestoreUpdate(fsDoc.id, {montant: montant5, ref: ref5, datesign: devisEnvoyeLe, updatedAt: new Date().toISOString()});
             }).catch(function(e){ console.error('Firestore created update error:', e.message); });
           }
           res.writeHead(200); res.end(JSON.stringify({success: true}));
@@ -636,7 +640,7 @@ var server = http.createServer(function(req, res) {
           // Ne pas ecraser la borne si valeur par defaut ou vide
           if (borneTxt6 && borneTxt6 !== 'Borne a definir') update6.borne = borneTxt6;
           if (montant6)  update6.montant = montant6;
-          if (isSigned && sigStr6) update6.datesign = sigStr6;
+          if (isSigned && sigStr6) update6.signeAt = sigStr6; // signeAt = date/heure signature, datesign = date envoi (ne pas ecraser)
           if (existing) {
             return firebasePatch('/commandes_axonaut/' + existing.key + '.json', update6);
           }
@@ -662,6 +666,7 @@ var server = http.createServer(function(req, res) {
                 };
                 if (borneTxt6) fsUpdate.borne = borneTxt6;
                 if (isSigned) fsUpdate.statut = 'devis_signe';
+                if (isSigned && sigStr6) fsUpdate.signeAt = sigStr6;
                 return firestoreUpdate(fsDoc.id, fsUpdate);
               }
             }).catch(function(e){ console.error('Firestore montant update error:', e.message); });
