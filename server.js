@@ -601,14 +601,17 @@ var server = http.createServer(function(req, res) {
       if (topic.includes('quotation.updated')) {
         var statut6  = (data.status || '').toLowerCase();
         var sigDate6 = data.electronic_signature_date;
-        // Signe UNIQUEMENT si topic customerAnswer ET statut accepte ET date de signature presente
         var isCustomerAnswer = topic.includes('customeranswer');
-        var hasSignature = sigDate6 && sigDate6 !== null && sigDate6 !== 'null'
-                        && typeof sigDate6 === 'object' && sigDate6.date;
-        // Signature electronique (customerAnswer + date) OU signature manuelle admin (statut signed/won)
+        // Axonaut peut envoyer electronic_signature_date comme objet {date:"..."} OU comme string directement
+        var hasSignature = sigDate6 && sigDate6 !== null && sigDate6 !== 'null' && sigDate6 !== ''
+                        && (
+                          (typeof sigDate6 === 'object' && sigDate6.date) ||
+                          (typeof sigDate6 === 'string' && sigDate6.length > 0)
+                        );
+        // Signe si : statut accepte/signe/won ET (signature presente OU customerAnswer OU statut explicitement signe/won)
         var isSigned = (statut6 === 'accepted' || statut6 === 'signed' || statut6 === 'won')
                     && (hasSignature || isCustomerAnswer || statut6 === 'signed' || statut6 === 'won');
-        console.log('isSigned check - topic:', topic, '| statut:', statut6, '| hasSignature:', !!hasSignature, '| isSigned:', isSigned);
+        console.log('isSigned check - topic:', topic, '| statut:', statut6, '| hasSignature:', !!hasSignature, '| isCustomerAnswer:', isCustomerAnswer, '| isSigned:', isSigned);
         var devisNum6 = data.number || data.id || '';
         var ref6 = 'AX-' + devisNum6;
         var borneTxt6 = stripHtml(data.title || data.subject || '');
