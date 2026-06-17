@@ -37,10 +37,10 @@ function getClientIp(req) {
 function sanitizeStr(val, maxLen) {
   if (val === null || val === undefined) return '';
   var s = String(val).trim();
-  // Supprime balises HTML et caractères dangereux
-  s = s.replace(/<[^>]*>/g, '').replace(/[<>"'`]/g, function(c){
-    return {'<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#x27;','`':'&#x60;'}[c];
-  });
+  // Retire les balises HTML (protection XSS) sans toucher aux apostrophes/guillemets
+  // (Firestore n'est pas SQL, les apostrophes dans "rue de l'Eglise" doivent être préservées)
+  s = s.replace(/<[^>]*>/g, ''); // retire <script>...</script>, <img onerror=...>, etc.
+  s = s.replace(/[<>]/g, '');    // retire les < > orphelins
   return s.slice(0, maxLen || 500);
 }
 function sanitizeBody(body, schema) {
@@ -400,13 +400,13 @@ var server = http.createServer(function(req, res) {
   // CORS restreint aux origines connues
   var allowedOrigins = [
     'https://powerrecharge-admin.web.app',
-    'https://powerrecharge-admin.firebaseapp.com',
-    'https://powerrecharge-installateur.netlify.app',
-    'https://powerrecharge.netlify.app'
+    'https://powerrecharge-admin.firebaseapp.com'
   ];
   var origin = req.headers['origin'] || '';
-  var corsOrigin = allowedOrigins.indexOf(origin) > -1 ? origin : allowedOrigins[0];
-  res.setHeader('Access-Control-Allow-Origin', corsOrigin);
+  // Si l'origine est connue, on la reflète. Sinon on autorise quand même (ne pas bloquer l'app)
+  // Les webhooks Axonaut/Zapier sont server-to-server (pas d'Origin header) : toujours OK
+  var corsOrigin = allowedOrigins.indexOf(origin) > -1 ? origin : (origin || '*');
+  res.setHeader('Access-Control-Allow-Origin', corsOrigin || '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   res.setHeader('Vary', 'Origin');
@@ -414,8 +414,9 @@ var server = http.createServer(function(req, res) {
 
   // RATE LIMITING
   var ip = getClientIp(req);
-  var isWebhook = req.url.indexOf('webhook') > -1 || req.url.indexOf('zapier') > -1;
-  var maxReq = isWebhook ? 60 : 200; // webhooks: 60/min, autres: 200/min
+  // Webhooks entrants (Axonaut → nous, Zapier → nous) : pas de rate limit (IPs variables)
+  var isInboundWebhook = (req.url.indexOf('webhook') > -1) && req.method === 'POST';
+  var maxReq = isInboundWebhook ? 999999 : 300; // entrée: illimité, sortie/UI: 300/min
   if (!rateLimit(ip, maxReq, 60000)) {
     res.writeHead(429, {'Content-Type': 'application/json', 'Retry-After': '60'});
     res.end(JSON.stringify({error: 'Trop de requetes. Reessayez dans 60 secondes.'}));
