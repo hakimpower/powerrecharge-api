@@ -1,9 +1,59 @@
 const https = require('https');
 const http  = require('http');
 
-const FIREBASE_URL = 'powerrecharge-admin-default-rtdb.europe-west1.firebasedatabase.app';
-const FIREBASE_KEY = 'AIzaSyAIUZttIylRrTBb3BuQsMVJzYgIqu35hc4';
+const FIREBASE_URL = process.env.FIREBASE_URL || 'powerrecharge-admin-default-rtdb.europe-west1.firebasedatabase.app';
+const FIREBASE_KEY = process.env.FIREBASE_KEY || 'AIzaSyAIUZttIylRrTBb3BuQsMVJzYgIqu35hc4';
 const PORT         = process.env.PORT || 3000;
+const AXONAUT_KEY  = process.env.AXONAUT_KEY || '619080bd85898f22780e9d463e107e8ac30647619080';
+
+// ============================================================
+// POINT 2 — RATE LIMITING (protection crash & surcoût VPS)
+// ============================================================
+var _rlMap = {}; // {ip: [timestamps]}
+function rateLimit(ip, maxReq, windowMs) {
+  var now = Date.now();
+  if (!_rlMap[ip]) _rlMap[ip] = [];
+  _rlMap[ip] = _rlMap[ip].filter(function(t){ return now - t < windowMs; });
+  if (_rlMap[ip].length >= maxReq) return false;
+  _rlMap[ip].push(now);
+  return true;
+}
+// Nettoyage toutes les 5 min pour éviter la fuite mémoire
+setInterval(function(){
+  var now = Date.now();
+  Object.keys(_rlMap).forEach(function(ip){
+    _rlMap[ip] = _rlMap[ip].filter(function(t){ return now - t < 300000; });
+    if (!_rlMap[ip].length) delete _rlMap[ip];
+  });
+}, 300000);
+
+function getClientIp(req) {
+  return (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
+}
+
+// ============================================================
+// POINT 3 — SANITISATION (protection injection / XSS / exfil)
+// ============================================================
+function sanitizeStr(val, maxLen) {
+  if (val === null || val === undefined) return '';
+  var s = String(val).trim();
+  // Supprime balises HTML et caractères dangereux
+  s = s.replace(/<[^>]*>/g, '').replace(/[<>"'`]/g, function(c){
+    return {'<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#x27;','`':'&#x60;'}[c];
+  });
+  return s.slice(0, maxLen || 500);
+}
+function sanitizeBody(body, schema) {
+  // schema = {champ: maxLength}
+  var out = {};
+  Object.keys(schema).forEach(function(k){
+    if (body[k] !== undefined && body[k] !== null) {
+      out[k] = typeof body[k] === 'number' ? body[k] : sanitizeStr(body[k], schema[k]);
+    }
+  });
+  return out;
+}
+
 
 // ═══ HELPERS ═══
 function stripHtml(str) {
@@ -14,7 +64,7 @@ function stripHtml(str) {
 
 const FIRESTORE_URL = 'firestore.googleapis.com';
 const FIREBASE_PROJECT = 'powerrecharge-admin';
-const FIREBASE_API_KEY = 'AIzaSyAIUZttIylRrTBb3BuQsMVJzYgIqu35hc4';
+const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY || 'AIzaSyAIUZttIylRrTBb3BuQsMVJzYgIqu35hc4';
 
 // Rechercher un dossier dans Firestore par champ
 
@@ -259,7 +309,7 @@ function getAxonautAddresses(companyId) {
       hostname: 'app.axonaut.com',
       path: '/api/v1/companies/' + companyId + '/addresses',
       method: 'GET',
-      headers: {'apiKey': '619080bd85898f22780e9d463e107e8ac30647619080'}
+      headers: {'apiKey': AXONAUT_KEY}
     };
     var req = https.request(options, function(res) {
       var d = '';
@@ -290,15 +340,15 @@ function getAxonautAddresses(companyId) {
 // ZAPIER NOTIFICATION WEBHOOKS
 // ═══════════════════════════════════════
 var ZAPIER = {
-  nouveau_prospect:  'https://hooks.zapier.com/hooks/catch/21452394/4bkfyuv/',
-  mission_affectee:  'https://hooks.zapier.com/hooks/catch/21452394/4bkfd5b/',
-  rdv_client:        'https://hooks.zapier.com/hooks/catch/21452394/4bkfrne/',
-  rdv_installation:  'https://hooks.zapier.com/hooks/catch/21452394/4bkfrne/',
-  rdv_previsit:      'https://hooks.zapier.com/hooks/catch/21452394/43tp5em/',
-  rdv_sav:           'https://hooks.zapier.com/hooks/catch/21452394/43tns35/',
-  rdv_admin:         'https://hooks.zapier.com/hooks/catch/21452394/4bkfs78/',
-  installation_client: 'https://hooks.zapier.com/hooks/catch/21452394/4bkfzho/',
-  installation_admin:  'https://hooks.zapier.com/hooks/catch/21452394/4bkfkye/'
+  nouveau_prospect:  process.env.ZAP_NOUVEAU_PROSPECT  || 'https://hooks.zapier.com/hooks/catch/21452394/4bkfyuv/',
+  mission_affectee:  process.env.ZAP_MISSION_AFFECTEE  || 'https://hooks.zapier.com/hooks/catch/21452394/4bkfd5b/',
+  rdv_client:        process.env.ZAP_RDV_CLIENT        || 'https://hooks.zapier.com/hooks/catch/21452394/4bkfrne/',
+  rdv_installation:  process.env.ZAP_RDV_INSTALLATION  || 'https://hooks.zapier.com/hooks/catch/21452394/4bkfrne/',
+  rdv_previsit:      process.env.ZAP_RDV_PREVISIT      || 'https://hooks.zapier.com/hooks/catch/21452394/43tp5em/',
+  rdv_sav:           process.env.ZAP_RDV_SAV           || 'https://hooks.zapier.com/hooks/catch/21452394/43tns35/',
+  rdv_admin:         process.env.ZAP_RDV_ADMIN         || 'https://hooks.zapier.com/hooks/catch/21452394/4bkfs78/',
+  installation_client: process.env.ZAP_INSTALLATION_CLIENT || 'https://hooks.zapier.com/hooks/catch/21452394/4bkfzho/',
+  installation_admin:  process.env.ZAP_INSTALLATION_ADMIN || 'https://hooks.zapier.com/hooks/catch/21452394/4bkfkye/'
 };
 
 function sendZapierNotif(url, data) {
@@ -347,14 +397,34 @@ function applyPendingAddress(companyId, rdbKey) {
 
 // ═══ SERVER ═══
 var server = http.createServer(function(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  // CORS restreint aux origines connues
+  var allowedOrigins = [
+    'https://powerrecharge-admin.web.app',
+    'https://powerrecharge-admin.firebaseapp.com',
+    'https://powerrecharge-installateur.netlify.app',
+    'https://powerrecharge.netlify.app'
+  ];
+  var origin = req.headers['origin'] || '';
+  var corsOrigin = allowedOrigins.indexOf(origin) > -1 ? origin : allowedOrigins[0];
+  res.setHeader('Access-Control-Allow-Origin', corsOrigin);
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Vary', 'Origin');
   if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return; }
+
+  // RATE LIMITING
+  var ip = getClientIp(req);
+  var isWebhook = req.url.indexOf('webhook') > -1 || req.url.indexOf('zapier') > -1;
+  var maxReq = isWebhook ? 60 : 200; // webhooks: 60/min, autres: 200/min
+  if (!rateLimit(ip, maxReq, 60000)) {
+    res.writeHead(429, {'Content-Type': 'application/json', 'Retry-After': '60'});
+    res.end(JSON.stringify({error: 'Trop de requetes. Reessayez dans 60 secondes.'}));
+    return;
+  }
 
   if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, {'Content-Type': 'application/json'});
-    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '8.4'}));
+    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '8.5'}));
     return;
   }
 
@@ -697,6 +767,13 @@ var server = http.createServer(function(req, res) {
   if (req.url === '/formulaire-webhook' && req.method === 'POST') {
     parseBody(req).then(function(body) {
       console.log('Formulaire Zapier recu:', JSON.stringify(body).slice(0, 500));
+      // Sanitisation des champs texte
+      body = sanitizeBody(body, {
+        client:100, nom_prenom:100, name:100, tel:20, email:100,
+        adresse:200, ville:80, cp:10, dept:5, borne:200,
+        type_logement:80, montant:20, commentaire:500,
+        axonautId:50, axonaut_id:50, ref:50
+      });
 
       var cp = body.cp || body.code_postal || '';
       var axonautId = body.axonautId || body.axonaut_id || '';
@@ -790,6 +867,11 @@ var server = http.createServer(function(req, res) {
   // ═══════════════════════════════════════
   if (req.url === '/notify' && req.method === 'POST') {
     parseBody(req).then(function(body) {
+      body = sanitizeBody(body, {
+        type:30, client:100, adresse:200, ville:80, tel:20, email:100,
+        borne:200, installateur:100, inst_email:100, inst_code:30,
+        notes:500, rdv:50, rdvType:20, cp:10
+      });
       var type = body.type;
       console.log('Notification:', type, '|', body.client);
 
@@ -1083,7 +1165,7 @@ var server = http.createServer(function(req, res) {
       hostname: 'app.axonaut.com',
       path: '/api/v1/quotations?limit=200',
       method: 'GET',
-      headers: { 'apiKey': '619080bd85898f22780e9d463e107e8ac30647619080' }
+      headers: { 'apiKey': AXONAUT_KEY }
     };
     var proxyReq = https.request(options, function(proxyRes) {
       var data = '';
@@ -1297,7 +1379,7 @@ var server = http.createServer(function(req, res) {
   // ═══ SYNC MONTANTS ═══
   if (req.url === '/sync-montants' && req.method === 'GET') {
     res.setHeader('Access-Control-Allow-Origin','*');
-    var axS={hostname:'app.axonaut.com',path:'/api/v1/quotations?limit=200',method:'GET',headers:{'apiKey':'619080bd85898f22780e9d463e107e8ac30647619080'}};
+    var axS={hostname:'app.axonaut.com',path:'/api/v1/quotations?limit=200',method:'GET',headers:{'apiKey':AXONAUT_KEY}};
     https.request(axS,function(aRes){
       var d=''; aRes.on('data',function(c){d+=c;}); aRes.on('end',function(){
         try{
@@ -1319,9 +1401,22 @@ var server = http.createServer(function(req, res) {
     return;
   }
 
+  // ═══ PROXY LEAD MAIL (évite d'exposer les URLs Zapier côté client) ═══
+  if (req.url.startsWith('/lead-mail') && req.method === 'POST') {
+    var mailNum = req.url === '/lead-mail2' ? 2 : 1;
+    var hookUrl = mailNum === 1 ? (process.env.ZAP_LEAD_MAIL1 || 'https://hooks.zapier.com/hooks/catch/21452394/4bn92rb/')
+                                : (process.env.ZAP_LEAD_MAIL2 || 'https://hooks.zapier.com/hooks/catch/21452394/4bn9rns/');
+    parseBody(req).then(function(body) {
+      body = sanitizeBody(body, {client:100, email:100, tel:20});
+      sendZapierNotif(hookUrl, {client: body.client || '', email: body.email || '', tel: body.tel || ''});
+      res.writeHead(200); res.end(JSON.stringify({success: true}));
+    }).catch(function(e){ res.writeHead(200); res.end(JSON.stringify({error: e.message})); });
+    return;
+  }
+
   res.writeHead(404); res.end(JSON.stringify({error: 'Route inconnue'}));
 });
 
 server.listen(PORT, function() {
-  console.log('PowerRecharge API v8.4 demarree sur port', PORT);
+  console.log('PowerRecharge API v8.5 demarree sur port', PORT);
 });
