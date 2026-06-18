@@ -1175,7 +1175,8 @@ var server = http.createServer(function(req, res) {
           var qs = Array.isArray(parsed) ? parsed : (parsed.data || parsed.quotations || []);
           // Garder uniquement les devis signés/acceptés/won
           var signed = qs.filter(function(q) {
-            return q.status === 'signed' || q.status === 'won' || q.status === 'accepted';
+            var s = (q.status || q.statut || '').toLowerCase();
+            return s === 'signed' || s === 'won' || s === 'accepted' || s === 'valid' || s === 'signe';
           });
           console.log('sync-signatures: '+signed.length+' devis signes dans Axonaut');
           var fixed = [], checked = 0, promises = [];
@@ -1209,6 +1210,12 @@ var server = http.createServer(function(req, res) {
           Promise.all(promises).then(function() {
             res.writeHead(200, {'Content-Type': 'application/json'});
             res.end(JSON.stringify({ success: true, checked: checked, fixed: fixed.length, details: fixed }));
+          }).catch(function(e){
+            console.error('sync-signatures Promise error:', e.message);
+            if (!res.headersSent) {
+              res.writeHead(500, {'Content-Type': 'application/json'});
+              res.end(JSON.stringify({ success: false, error: e.message, checked: checked, fixed: fixed.length, details: fixed }));
+            }
           });
         } catch(e) {
           res.writeHead(500); res.end(JSON.stringify({error: e.message}));
