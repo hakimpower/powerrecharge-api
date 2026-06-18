@@ -678,23 +678,26 @@ var server = http.createServer(function(req, res) {
       // Mise a jour devis ou signature
       if (topic.includes('quotation.updated')) {
         var statut6  = (data.status || '').toLowerCase();
+        var sigDate6 = data.electronic_signature_date;
         var isCustomerAnswer = topic.includes('customeranswer');
-        // Signe si : statut accepte/signe/won ET (customerAnswer OU statut explicitement signe/won)
+        // Axonaut peut envoyer electronic_signature_date comme objet {date:"..."} OU comme string directement
+        var hasSignature = sigDate6 && sigDate6 !== null && sigDate6 !== 'null' && sigDate6 !== ''
+                        && (
+                          (typeof sigDate6 === 'object' && sigDate6.date) ||
+                          (typeof sigDate6 === 'string' && sigDate6.length > 0)
+                        );
+        // Signe si : statut accepte/signe/won ET (signature presente OU customerAnswer OU statut explicitement signe/won)
         var isSigned = (statut6 === 'accepted' || statut6 === 'signed' || statut6 === 'won')
-                    && (isCustomerAnswer || statut6 === 'signed' || statut6 === 'won');
-        console.log('isSigned check - topic:', topic, '| statut:', statut6, '| isCustomerAnswer:', isCustomerAnswer, '| isSigned:', isSigned);
-        // Date/heure de réception du webhook = date de signature (fiable, indépendant du format Axonaut)
-        var now6 = new Date();
-        var sigStr6 = now6.getFullYear()+'-'
-          +String(now6.getMonth()+1).padStart(2,'0')+'-'
-          +String(now6.getDate()).padStart(2,'0')+' '
-          +String(now6.getHours()).padStart(2,'0')+':'
-          +String(now6.getMinutes()).padStart(2,'0');
+                    && (hasSignature || isCustomerAnswer || statut6 === 'signed' || statut6 === 'won');
+        console.log('isSigned check - topic:', topic, '| statut:', statut6, '| hasSignature:', !!hasSignature, '| isCustomerAnswer:', isCustomerAnswer, '| isSigned:', isSigned);
         var devisNum6 = data.number || data.id || '';
         var ref6 = 'AX-' + devisNum6;
         var borneTxt6 = stripHtml(data.title || data.subject || '');
         if (borneTxt6.startsWith(String(devisNum6))) borneTxt6 = borneTxt6.slice(String(devisNum6).length).trim();
         if (!borneTxt6 || borneTxt6.length < 2) borneTxt6 = '';
+        var sigStr6 = '';
+        if (sigDate6 && typeof sigDate6 === 'object' && sigDate6.date) sigStr6 = sigDate6.date.slice(0,10);
+        else if (sigDate6 && typeof sigDate6 === 'string') sigStr6 = sigDate6.slice(0,10);
         var montant6 = Number(data.total_amount || data.pre_tax_amount || 0);
         var companyId6 = data.company_id;
         console.log('Quotation updated - signe:', isSigned, '| ref:', ref6, '| montant:', montant6);
@@ -711,7 +714,7 @@ var server = http.createServer(function(req, res) {
           // Ne pas ecraser la borne si valeur par defaut ou vide
           if (borneTxt6 && borneTxt6 !== 'Borne a definir') update6.borne = borneTxt6;
           if (montant6)  update6.montant = montant6;
-          if (isSigned) update6.signeAt = sigStr6; // date/heure de reception du webhook
+          if (isSigned && sigStr6) update6.signeAt = sigStr6; // signeAt = date/heure signature, datesign = date envoi (ne pas ecraser)
           if (existing) {
             return firebasePatch('/commandes_axonaut/' + existing.key + '.json', update6);
           }
@@ -737,7 +740,7 @@ var server = http.createServer(function(req, res) {
                 };
                 if (borneTxt6) fsUpdate.borne = borneTxt6;
                 if (isSigned) fsUpdate.statut = 'devis_signe';
-                if (isSigned) fsUpdate.signeAt = sigStr6;
+                if (isSigned && sigStr6) fsUpdate.signeAt = sigStr6;
                 return firestoreUpdate(fsDoc.id, fsUpdate);
               }
             }).catch(function(e){ console.error('Firestore montant update error:', e.message); });
@@ -1153,8 +1156,6 @@ var server = http.createServer(function(req, res) {
     });
     return;
   }
-
-
 
 
   // ═══ PROXY AXONAUT QUOTATIONS ═══
