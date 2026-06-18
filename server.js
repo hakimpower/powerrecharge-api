@@ -1158,6 +1158,66 @@ var server = http.createServer(function(req, res) {
   }
 
 
+  // ═══ SYNC SIGNATURES — détecte les devis signés dans Axonaut non mis à jour dans Firebase ═══
+  if (req.url === '/sync-signatures' && req.method === 'GET') {
+    var axOpts = {
+      hostname: 'app.axonaut.com',
+      path: '/api/v1/quotations?limit=500',
+      method: 'GET',
+      headers: { 'apiKey': AXONAUT_KEY }
+    };
+    https.request(axOpts, function(axRes) {
+      var data = '';
+      axRes.on('data', function(c){ data += c; });
+      axRes.on('end', function() {
+        try {
+          var parsed = JSON.parse(data);
+          var qs = Array.isArray(parsed) ? parsed : (parsed.data || parsed.quotations || []);
+          // Garder uniquement les devis signés/acceptés/won
+          var signed = qs.filter(function(q) {
+            return q.status === 'signed' || q.status === 'won' || q.status === 'accepted';
+          });
+          console.log('sync-signatures: '+signed.length+' devis signes dans Axonaut');
+          var fixed = [], checked = 0, promises = [];
+          signed.forEach(function(q) {
+            var companyId = String(q.company_id || '');
+            var ref = String(q.number || '');
+            if (!companyId && !ref) return;
+            var p = firestoreQuery('axonautId', companyId).then(function(fsDoc) {
+              return fsDoc || (ref ? firestoreQuery('ref', ref) : null);
+            }).then(function(fsDoc) {
+              checked++;
+              if (!fsDoc) return;
+              var d = fsDoc.data || {};
+              var needsFix = d.statut !== 'devis_signe' && d.statut !== 'new'
+                          && d.statut !== 'affected' && d.statut !== 'rdv'
+                          && d.statut !== 'progress' && d.statut !== 'done'
+                          && d.statut !== 'sav' && d.statut !== 'cloture';
+              if (needsFix) {
+                var sigDate = q.electronic_signature_date;
+                var sigStr = '';
+                if (sigDate && typeof sigDate === 'object' && sigDate.date) sigStr = sigDate.date.replace('T',' ').slice(0,16);
+                else if (sigDate && typeof sigDate === 'string' && sigDate.length > 0) sigStr = sigDate.replace('T',' ').slice(0,16);
+                var update = { statut: 'devis_signe', updatedAt: new Date().toISOString() };
+                if (sigStr) update.signeAt = sigStr;
+                fixed.push({ client: d.client || '?', ref: ref, ancien_statut: d.statut, signeAt: sigStr });
+                return firestoreUpdate(fsDoc.id, update);
+              }
+            }).catch(function(e){ console.warn('sync-signatures error:', e.message); });
+            promises.push(p);
+          });
+          Promise.all(promises).then(function() {
+            res.writeHead(200, {'Content-Type': 'application/json'});
+            res.end(JSON.stringify({ success: true, checked: checked, fixed: fixed.length, details: fixed }));
+          });
+        } catch(e) {
+          res.writeHead(500); res.end(JSON.stringify({error: e.message}));
+        }
+      });
+    }).on('error', function(e){ res.writeHead(500); res.end(JSON.stringify({error:e.message})); }).end();
+    return;
+  }
+
   // ═══ PROXY AXONAUT QUOTATIONS ═══
   if (req.url === '/axonaut-quotations' && req.method === 'GET') {
     res.setHeader('Access-Control-Allow-Origin', '*');
