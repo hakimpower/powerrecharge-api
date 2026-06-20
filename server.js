@@ -176,6 +176,157 @@ function firestoreUpdate(docId, fields) {
   });
 }
 
+// ============================================================
+// FIRESTORE GENERIQUE — collection parametrable (utilise pour ekwateur_dossiers)
+// ============================================================
+function firestoreCreateIn(collection, data) {
+  return new Promise(function(resolve, reject) {
+    var fields = {};
+    Object.keys(data).forEach(function(k) {
+      var v = data[k];
+      if (typeof v === 'number')       fields[k] = {doubleValue: v};
+      else if (typeof v === 'boolean') fields[k] = {booleanValue: v};
+      else if (v === null)             fields[k] = {nullValue: null};
+      else                             fields[k] = {stringValue: String(v)};
+    });
+    var body = JSON.stringify({fields: fields});
+    var options = {
+      hostname: FIRESTORE_URL,
+      path: '/v1/projects/' + FIREBASE_PROJECT + '/databases/(default)/documents/' + collection + '?key=' + FIREBASE_API_KEY,
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body)}
+    };
+    var req = https.request(options, function(res) {
+      var d = '';
+      res.on('data', function(c){ d += c; });
+      res.on('end', function(){
+        console.log('firestoreCreateIn[' + collection + '] status:', res.statusCode, d.slice(0,100));
+        if (res.statusCode >= 200 && res.statusCode < 300) resolve(JSON.parse(d));
+        else reject(new Error('Firestore create error: ' + res.statusCode + ' ' + d.slice(0,100)));
+      });
+    });
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
+function firestoreQueryIn(collection, field, value) {
+  return new Promise(function(resolve) {
+    var body = JSON.stringify({
+      structuredQuery: {
+        from: [{collectionId: collection}],
+        where: {
+          fieldFilter: {
+            field: {fieldPath: field},
+            op: 'EQUAL',
+            value: {stringValue: String(value)}
+          }
+        },
+        limit: 1
+      }
+    });
+    var options = {
+      hostname: FIRESTORE_URL,
+      path: '/v1/projects/' + FIREBASE_PROJECT + '/databases/(default)/documents:runQuery?key=' + FIREBASE_API_KEY,
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body)}
+    };
+    var req = https.request(options, function(res) {
+      var d = '';
+      res.on('data', function(c){ d += c; });
+      res.on('end', function(){
+        try {
+          var results = JSON.parse(d);
+          var doc = results.find(function(r){ return r.document; });
+          if (doc && doc.document) {
+            var name = doc.document.name;
+            var docId = name.split('/').pop();
+            resolve({id: docId, data: doc.document.fields});
+          } else {
+            resolve(null);
+          }
+        } catch(e) { console.error('firestoreQueryIn error:', e.message); resolve(null); }
+      });
+    });
+    req.on('error', function(e){ console.error('firestoreQueryIn req error:', e.message); resolve(null); });
+    req.end(body);
+  });
+}
+
+function firestoreUpdateIn(collection, docId, fields) {
+  return new Promise(function(resolve) {
+    var fsFields = {};
+    var masks = [];
+    Object.keys(fields).forEach(function(k) {
+      var v = fields[k];
+      masks.push(k);
+      if (typeof v === 'number') fsFields[k] = {doubleValue: v};
+      else if (typeof v === 'boolean') fsFields[k] = {booleanValue: v};
+      else fsFields[k] = {stringValue: String(v)};
+    });
+    var maskStr = masks.map(function(m){ return 'updateMask.fieldPaths=' + m; }).join('&');
+    var body = JSON.stringify({fields: fsFields});
+    var options = {
+      hostname: FIRESTORE_URL,
+      path: '/v1/projects/' + FIREBASE_PROJECT + '/databases/(default)/documents/' + collection + '/' + docId + '?' + maskStr + '&key=' + FIREBASE_API_KEY,
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body)}
+    };
+    var req = https.request(options, function(res) {
+      var d = '';
+      res.on('data', function(c){ d += c; });
+      res.on('end', function(){
+        console.log('firestoreUpdateIn[' + collection + '] response:', res.statusCode, d.slice(0,100));
+        resolve(res.statusCode);
+      });
+    });
+    req.on('error', function(e){ console.error('firestoreUpdateIn error:', e.message); resolve(0); });
+    req.end(body);
+  });
+}
+
+function firestoreListIn(collection) {
+  return new Promise(function(resolve) {
+    var options = {
+      hostname: FIRESTORE_URL,
+      path: '/v1/projects/' + FIREBASE_PROJECT + '/databases/(default)/documents/' + collection + '?key=' + FIREBASE_API_KEY + '&pageSize=300',
+      method: 'GET'
+    };
+    var req = https.request(options, function(res) {
+      var d = '';
+      res.on('data', function(c){ d += c; });
+      res.on('end', function(){
+        try {
+          var parsed = JSON.parse(d);
+          var docs = (parsed.documents || []).map(function(doc) {
+            var id = doc.name.split('/').pop();
+            return {id: id, data: doc.fields};
+          });
+          resolve(docs);
+        } catch(e) { console.error('firestoreListIn error:', e.message); resolve([]); }
+      });
+    });
+    req.on('error', function(e){ console.error('firestoreListIn req error:', e.message); resolve([]); });
+    req.end();
+  });
+}
+
+// Decode les champs Firestore (format {stringValue:...}) vers un objet JS simple
+function decodeFirestoreFields(fields) {
+  var out = {};
+  if (!fields) return out;
+  Object.keys(fields).forEach(function(k) {
+    var v = fields[k];
+    if (v.stringValue !== undefined) out[k] = v.stringValue;
+    else if (v.doubleValue !== undefined) out[k] = v.doubleValue;
+    else if (v.integerValue !== undefined) out[k] = parseInt(v.integerValue);
+    else if (v.booleanValue !== undefined) out[k] = v.booleanValue;
+    else if (v.nullValue !== undefined) out[k] = null;
+    else out[k] = null;
+  });
+  return out;
+}
+
 function firebasePost(path, data) {
   return new Promise(function(resolve, reject) {
     var body = JSON.stringify(data);
@@ -956,6 +1107,192 @@ var server = http.createServer(function(req, res) {
   // ROUTE: /lead-webhook
   // Recoit les leads Facebook depuis Zapier
   // ═══════════════════════════════════════
+  // ============================================================
+  // EKWATEUR — Webhook reception mail (via Zapier)
+  // ============================================================
+  if (req.url === '/ekwateur-webhook' && req.method === 'POST') {
+    parseBody(req).then(function(body) {
+      var subject = body.subject || body.objet || '';
+      var content = body.body || body.body_plain || body.content || body.text || '';
+      console.log('Ekwateur mail recu — sujet:', subject);
+
+      // ─── Detection du type de mail ───
+      var isDemandeInstall   = /demande d.installation ekwateur/i.test(subject);
+      var isDemandeVisite    = /demande de visite technique ekwateur/i.test(subject);
+      var isConfirmationRdv  = /confirmation de rendez-vous/i.test(subject);
+      var isRapportInstall   = /rapport installation/i.test(subject);
+
+      // ─── Extraction ID Ekwateur (toujours present sous une forme ou une autre) ───
+      var idMatch = (subject + ' ' + content).match(/DIB-\d+/i);
+      var idEkwateur = idMatch ? idMatch[0].toUpperCase() : '';
+      if (!idEkwateur) {
+        console.log('Ekwateur: ID introuvable, mail ignore. Sujet:', subject);
+        res.writeHead(200); res.end(JSON.stringify({success: false, reason: 'id_introuvable'}));
+        return;
+      }
+
+      function field(label) {
+        var re = new RegExp(label + '\\s*:\\s*([^\\n\\r]+)', 'i');
+        var m = content.match(re);
+        return m ? m[1].trim() : '';
+      }
+
+      // ═══ 1. DEMANDE D'INSTALLATION ═══
+      if (isDemandeInstall) {
+        var dossierInstall = {
+          idEkwateur:    idEkwateur,
+          type:          'installation',
+          statut:        'nouveau',
+          client:        field('Nom'),
+          email:         field('Mail'),
+          tel:           field('Tél') || field('Tel'),
+          adresse:       field('Adresse'),
+          logement:      field('Logement'),
+          typeLogement:  field('Type de logement'),
+          typeInstall:   field("Type d'installation"),
+          puissance:     field('Puissance souscrite'),
+          emplacementTableau: field('Emplacement tableau'),
+          emplacementBorne:   field('Emplacement souhaité') || field('Emplacement souhaite'),
+          distance:      field('Distance estimée') || field('Distance estimee'),
+          nbMurs:        field('Nombre de murs'),
+          poseType:      field('Installation de la borne'),
+          produits:      field('Liste des produits'),
+          indications:   field('Indications particulières') || field('Indications particulieres'),
+          createdAt:     new Date().toISOString(),
+          updatedAt:     new Date().toISOString()
+        };
+        firestoreQueryIn('ekwateur_dossiers', 'idEkwateur', idEkwateur).then(function(existing) {
+          if (existing) {
+            console.log('Ekwateur installation deja existante:', idEkwateur);
+            res.writeHead(200); res.end(JSON.stringify({success: true, action: 'already_exists'}));
+            return;
+          }
+          return firestoreCreateIn('ekwateur_dossiers', dossierInstall).then(function() {
+            console.log('Ekwateur installation creee:', idEkwateur, dossierInstall.client);
+            res.writeHead(200); res.end(JSON.stringify({success: true, action: 'created'}));
+          });
+        }).catch(function(e) {
+          console.error('Ekwateur install error:', e.message);
+          res.writeHead(500); res.end(JSON.stringify({success: false, error: e.message}));
+        });
+        return;
+      }
+
+      // ═══ 2. DEMANDE DE VISITE TECHNIQUE (pre-visite) ═══
+      if (isDemandeVisite) {
+        var dossierPV = {
+          idEkwateur:    idEkwateur,
+          type:          'previsite',
+          statut:        'nouveau',
+          client:        field('Nom'),
+          email:         field('Mail'),
+          tel:           field('Tél') || field('Tel'),
+          adresse:       field('Adresse'),
+          logement:      field('Logement'),
+          typeLogement:  field('Type de logement'),
+          typeInstall:   field("Type d'installation"),
+          puissance:     field('Puissance souscrite'),
+          emplacementTableau: field('Emplacement tableau'),
+          emplacementBorne:   field('Emplacement souhaité') || field('Emplacement souhaite'),
+          distance:      field('Distance estimée') || field('Distance estimee'),
+          nbMurs:        field('Nombre de murs'),
+          borneModele:   field('Marque/modèle de la borne') || field('Marque/modele de la borne'),
+          accessoires:   field('Accessoires à installer') || field('Accessoires a installer'),
+          indications:   field('Indications particulières') || field('Indications particulieres'),
+          rdv:           '', // saisi manuellement par l'admin
+          createdAt:     new Date().toISOString(),
+          updatedAt:     new Date().toISOString()
+        };
+        firestoreQueryIn('ekwateur_dossiers', 'idEkwateur', idEkwateur).then(function(existing) {
+          if (existing) {
+            console.log('Ekwateur previsite deja existante:', idEkwateur);
+            res.writeHead(200); res.end(JSON.stringify({success: true, action: 'already_exists'}));
+            return;
+          }
+          return firestoreCreateIn('ekwateur_dossiers', dossierPV).then(function() {
+            console.log('Ekwateur previsite creee:', idEkwateur, dossierPV.client);
+            res.writeHead(200); res.end(JSON.stringify({success: true, action: 'created'}));
+          });
+        }).catch(function(e) {
+          console.error('Ekwateur previsite error:', e.message);
+          res.writeHead(500); res.end(JSON.stringify({success: false, error: e.message}));
+        });
+        return;
+      }
+
+      // ═══ 3. CONFIRMATION DE RENDEZ-VOUS (installation uniquement, via l'ID en objet) ═══
+      if (isConfirmationRdv) {
+        var rdvMatch = content.match(/interviendra.{0,40}suivante\s*:\s*([^,]+),\s*le\s*(\d{2}\/\d{2}\/\d{4})\s+(\d{1,2}[:h]\d{2})/i);
+        if (!rdvMatch) {
+          console.log('Ekwateur confirmation RDV: format non reconnu pour', idEkwateur);
+          res.writeHead(200); res.end(JSON.stringify({success: false, reason: 'format_rdv_non_reconnu'}));
+          return;
+        }
+        var rdvAdresse = rdvMatch[1].trim();
+        var rdvDate    = rdvMatch[2];
+        var rdvHeure   = rdvMatch[3].replace('h', ':');
+        firestoreQueryIn('ekwateur_dossiers', 'idEkwateur', idEkwateur).then(function(existing) {
+          if (!existing) {
+            console.log('Ekwateur confirmation RDV: dossier introuvable pour', idEkwateur);
+            res.writeHead(200); res.end(JSON.stringify({success: false, reason: 'dossier_introuvable'}));
+            return;
+          }
+          return firestoreUpdateIn('ekwateur_dossiers', existing.id, {
+            statut:    'rdv_fixe',
+            rdv:       rdvDate + ' ' + rdvHeure,
+            rdvAdresse: rdvAdresse,
+            updatedAt: new Date().toISOString()
+          }).then(function() {
+            console.log('Ekwateur RDV confirme:', idEkwateur, rdvDate, rdvHeure);
+            res.writeHead(200); res.end(JSON.stringify({success: true, action: 'rdv_confirmed'}));
+          });
+        }).catch(function(e) {
+          console.error('Ekwateur confirmation RDV error:', e.message);
+          res.writeHead(500); res.end(JSON.stringify({success: false, error: e.message}));
+        });
+        return;
+      }
+
+      // ═══ 4. RAPPORT D'INSTALLATION ═══
+      if (isRapportInstall) {
+        var rapMatch = content.match(/réalisée le\s*(\d{2}\/\d{2}\/\d{4})\s+(\d{1,2}[:h]\d{2})\s+chez\s+(.+?)\s+à\s+(.+?)\./i)
+                    || content.match(/realisee le\s*(\d{2}\/\d{2}\/\d{4})\s+(\d{1,2}[:h]\d{2})\s+chez\s+(.+?)\s+a\s+(.+?)\./i);
+        var attachmentUrl = body.attachment_url || body.pdf_url || body.file_url || '';
+        firestoreQueryIn('ekwateur_dossiers', 'idEkwateur', idEkwateur).then(function(existing) {
+          if (!existing) {
+            console.log('Ekwateur rapport: dossier introuvable pour', idEkwateur);
+            res.writeHead(200); res.end(JSON.stringify({success: false, reason: 'dossier_introuvable'}));
+            return;
+          }
+          var upd = {
+            statut:    'termine',
+            updatedAt: new Date().toISOString()
+          };
+          if (rapMatch) {
+            upd.installDate  = rapMatch[1];
+            upd.installHeure = rapMatch[2].replace('h', ':');
+          }
+          if (attachmentUrl) upd.rapportPdfUrl = attachmentUrl;
+          return firestoreUpdateIn('ekwateur_dossiers', existing.id, upd).then(function() {
+            console.log('Ekwateur installation terminee:', idEkwateur);
+            res.writeHead(200); res.end(JSON.stringify({success: true, action: 'termine'}));
+          });
+        }).catch(function(e) {
+          console.error('Ekwateur rapport error:', e.message);
+          res.writeHead(500); res.end(JSON.stringify({success: false, error: e.message}));
+        });
+        return;
+      }
+
+      console.log('Ekwateur: type de mail non reconnu. Sujet:', subject);
+      res.writeHead(200); res.end(JSON.stringify({success: false, reason: 'type_non_reconnu'}));
+    }).catch(function(e) {
+      console.error('Ekwateur webhook error:', e.message);
+      res.writeHead(500); res.end(JSON.stringify({success: false, error: e.message}));
+    });
+    return;
+  }
+
   if (req.url === '/lead-webhook' && req.method === 'POST') {
     parseBody(req).then(function(body) {
       console.log('Lead Facebook recu:', JSON.stringify(body).slice(0, 400));
@@ -1417,6 +1754,39 @@ var server = http.createServer(function(req, res) {
 
   res.writeHead(404); res.end(JSON.stringify({error: 'Route inconnue'}));
 });
+
+// ============================================================
+// EKWATEUR — Cron: bascule auto en "termine" les pre-visites dont le RDV est passe
+// (pas de mail de rapport pour la pre-visite, donc verification periodique)
+// ============================================================
+function checkEkwateurPreVisitesExpirees() {
+  firestoreListIn('ekwateur_dossiers').then(function(docs) {
+    var now = new Date();
+    docs.forEach(function(doc) {
+      var d = decodeFirestoreFields(doc.data);
+      if (d.type !== 'previsite') return;
+      if (d.statut !== 'rdv_fixe') return;
+      if (!d.rdv) return;
+      // Format attendu: "DD/MM/YYYY HH:MM"
+      var m = String(d.rdv).match(/(\d{2})\/(\d{2})\/(\d{4})\s+(\d{1,2}):(\d{2})/);
+      if (!m) return;
+      var rdvDate = new Date(parseInt(m[3]), parseInt(m[2])-1, parseInt(m[1]), parseInt(m[4]), parseInt(m[5]));
+      if (isNaN(rdvDate.getTime())) return;
+      if (rdvDate.getTime() < now.getTime()) {
+        firestoreUpdateIn('ekwateur_dossiers', doc.id, {
+          statut: 'termine',
+          updatedAt: new Date().toISOString()
+        }).then(function() {
+          console.log('Ekwateur pre-visite auto-terminee (RDV passe):', d.idEkwateur, d.client);
+        });
+      }
+    });
+  }).catch(function(e) { console.error('checkEkwateurPreVisitesExpirees error:', e.message); });
+}
+// Verification toutes les 30 minutes
+setInterval(checkEkwateurPreVisitesExpirees, 30 * 60000);
+// Premiere verification 1 minute apres le demarrage du serveur
+setTimeout(checkEkwateurPreVisitesExpirees, 60000);
 
 server.listen(PORT, function() {
   console.log('PowerRecharge API v8.5 demarree sur port', PORT);
