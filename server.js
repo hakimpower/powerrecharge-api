@@ -7,6 +7,16 @@ const PORT         = process.env.PORT || 3000;
 const AXONAUT_KEY  = process.env.AXONAUT_KEY || '619080bd85898f22780e9d463e107e8ac30647619080';
 
 // ============================================================
+// PROTECTION GLOBALE — évite que les erreurs non catchées tuent le process
+// ============================================================
+process.on('uncaughtException', function(err) {
+  console.error('[UNCAUGHT EXCEPTION] Le serveur continue malgré :', err.message);
+});
+process.on('unhandledRejection', function(reason) {
+  console.error('[UNHANDLED REJECTION] Le serveur continue malgré :', reason && reason.message ? reason.message : reason);
+});
+
+// ============================================================
 // POINT 2 — RATE LIMITING (protection crash & surcoût VPS)
 // ============================================================
 var _rlMap = {}; // {ip: [timestamps]}
@@ -201,8 +211,11 @@ function firestoreCreateIn(collection, data) {
       res.on('data', function(c){ d += c; });
       res.on('end', function(){
         console.log('firestoreCreateIn[' + collection + '] status:', res.statusCode, d.slice(0,100));
-        if (res.statusCode >= 200 && res.statusCode < 300) resolve(JSON.parse(d));
-        else reject(new Error('Firestore create error: ' + res.statusCode + ' ' + d.slice(0,100)));
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try { resolve(JSON.parse(d)); } catch(e) { reject(new Error('firestoreCreateIn JSON parse error: ' + e.message)); }
+        } else {
+          reject(new Error('Firestore create error: ' + res.statusCode + ' ' + d.slice(0,100)));
+        }
       });
     });
     req.on('error', reject);
@@ -235,6 +248,10 @@ function firestoreQueryIn(collection, field, value) {
       var d = '';
       res.on('data', function(c){ d += c; });
       res.on('end', function(){
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          console.error('firestoreQueryIn HTTP error:', res.statusCode, d.slice(0,120));
+          resolve(null); return;
+        }
         try {
           var results = JSON.parse(d);
           var doc = results.find(function(r){ return r.document; });
@@ -296,6 +313,10 @@ function firestoreListIn(collection) {
       var d = '';
       res.on('data', function(c){ d += c; });
       res.on('end', function(){
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          console.error('firestoreListIn HTTP error:', res.statusCode, d.slice(0,120));
+          resolve([]); return;
+        }
         try {
           var parsed = JSON.parse(d);
           var docs = (parsed.documents || []).map(function(doc) {
