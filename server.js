@@ -782,6 +782,12 @@ var server = http.createServer(function(req, res) {
         var ref5 = 'AX-' + devisNum5;
         console.log('Quotation created:', companyName5, borneTxt5, montant5);
 
+        // Date + heure d'arrivée du devis dans l'application
+        var nowArr5 = new Date();
+        var devisEnvoyeLe = (data.created_at || data.sent_at)
+          ? (data.created_at || data.sent_at).toString().replace('T',' ').slice(0,16)
+          : nowArr5.getFullYear()+'-'+String(nowArr5.getMonth()+1).padStart(2,'0')+'-'+String(nowArr5.getDate()).padStart(2,'0')
+            +' '+String(nowArr5.getHours()).padStart(2,'0')+':'+String(nowArr5.getMinutes()).padStart(2,'0');
         return findDossierByAxonautId(companyId5).then(function(existing) {
           var update5 = {
             ref: ref5,
@@ -790,12 +796,6 @@ var server = http.createServer(function(req, res) {
           };
           if (borneTxt5) update5.borne = borneTxt5;
           if (montant5) update5.montant = montant5;
-          // Date + heure d'arrivée du devis dans l'application
-          var nowArr = new Date();
-          var devisEnvoyeLe = (data.created_at || data.sent_at)
-            ? (data.created_at || data.sent_at).toString().replace('T',' ').slice(0,16)
-            : nowArr.getFullYear()+'-'+String(nowArr.getMonth()+1).padStart(2,'0')+'-'+String(nowArr.getDate()).padStart(2,'0')
-              +' '+String(nowArr.getHours()).padStart(2,'0')+':'+String(nowArr.getMinutes()).padStart(2,'0');
           update5.datesign = devisEnvoyeLe;
           if (existing) {
             return firebasePatch('/commandes_axonaut/' + existing.key + '.json', update5);
