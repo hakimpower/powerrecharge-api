@@ -7,6 +7,12 @@ const PORT         = process.env.PORT || 3000;
 const AXONAUT_KEY  = process.env.AXONAUT_KEY || '619080bd85898f22780e9d463e107e8ac30647619080';
 
 // ============================================================
+// FACEBOOK MARKETING API
+// ============================================================
+const FB_AD_ACCOUNT = process.env.FB_AD_ACCOUNT || 'act_879279033941952';
+const FB_TOKEN      = process.env.FB_TOKEN || 'EAAkwkK5SXKABSKwAy3uSRdbDpuJ43lCljSW9ZAn5x4Gl9fyxutjo1LpAxZCBoh9DlCWiyezeLOEacC7cQoR5tGw1hdNZBc26Sl0sesm6OGciOJg80YmjG0AcltQNsOrazh8QMDwMVYkrAOmv0jP6giIvEUfrIbU68m8VKI4lvzfAQ8miwQU40oJZC7ZAp7SazFTdj';
+
+// ============================================================
 // PROTECTION GLOBALE — évite que les erreurs non catchées tuent le process
 // ============================================================
 process.on('uncaughtException', function(err) {
@@ -1616,6 +1622,90 @@ var server = http.createServer(function(req, res) {
 
 
   // ═══ IMPORT LEADS RDB → FIRESTORE ═══
+  // ============================================================
+  // FACEBOOK MARKETING API — Stats et coût par lead
+  // ============================================================
+  if (req.url.startsWith('/fb-stats') && req.method === 'GET') {
+    // Paramètres optionnels : ?date_preset=last_30d (défaut) ou ?since=2026-01-01&until=2026-01-31
+    var urlParams = new URL('http://localhost' + req.url).searchParams;
+    var datePreset = urlParams.get('date_preset') || 'last_30d';
+    var since = urlParams.get('since');
+    var until = urlParams.get('until');
+
+    var timeRange = since && until
+      ? 'time_range={"since":"' + since + '","until":"' + until + '"}'
+      : 'date_preset=' + datePreset;
+
+    var fields = 'spend,impressions,clicks,cpm,cpc,ctr,actions,cost_per_action_type,reach';
+    var fbPath = '/v19.0/' + FB_AD_ACCOUNT + '/insights?fields=' + encodeURIComponent(fields)
+      + '&' + encodeURIComponent(timeRange)
+      + '&access_token=' + FB_TOKEN;
+
+    var fbOptions = {
+      hostname: 'graph.facebook.com',
+      path: fbPath,
+      method: 'GET'
+    };
+
+    var fbReq = https.request(fbOptions, function(fbRes) {
+      var data = '';
+      fbRes.on('data', function(c){ data += c; });
+      fbRes.on('end', function(){
+        try {
+          var parsed = JSON.parse(data);
+          if (parsed.error) {
+            console.error('FB API error:', parsed.error.message);
+            res.writeHead(400); res.end(JSON.stringify({success: false, error: parsed.error.message}));
+            return;
+          }
+          var insights = parsed.data && parsed.data[0] ? parsed.data[0] : {};
+          // Extraire le coût par lead (action type = lead)
+          var costPerLead = null;
+          var leads = 0;
+          if (insights.cost_per_action_type) {
+            insights.cost_per_action_type.forEach(function(a){
+              if(a.action_type === 'lead' || a.action_type === 'leadgen_grouped') {
+                costPerLead = parseFloat(a.value).toFixed(2);
+              }
+            });
+          }
+          if (insights.actions) {
+            insights.actions.forEach(function(a){
+              if(a.action_type === 'lead' || a.action_type === 'leadgen_grouped') {
+                leads = parseInt(a.value) || 0;
+              }
+            });
+          }
+          var result = {
+            success: true,
+            period: datePreset || (since + ' → ' + until),
+            spend:        parseFloat(insights.spend || 0).toFixed(2),
+            impressions:  parseInt(insights.impressions || 0),
+            clicks:       parseInt(insights.clicks || 0),
+            reach:        parseInt(insights.reach || 0),
+            cpm:          parseFloat(insights.cpm || 0).toFixed(2),
+            cpc:          parseFloat(insights.cpc || 0).toFixed(2),
+            ctr:          parseFloat(insights.ctr || 0).toFixed(2),
+            leads:        leads,
+            costPerLead:  costPerLead || (leads > 0 ? (parseFloat(insights.spend || 0) / leads).toFixed(2) : null)
+          };
+          console.log('FB stats récupérées:', result.period, '| Dépenses:', result.spend, '€ | Coût/lead:', result.costPerLead, '€');
+          res.writeHead(200, {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'});
+          res.end(JSON.stringify(result));
+        } catch(e) {
+          console.error('FB stats parse error:', e.message);
+          res.writeHead(500); res.end(JSON.stringify({success: false, error: e.message}));
+        }
+      });
+    });
+    fbReq.on('error', function(e){
+      console.error('FB stats req error:', e.message);
+      res.writeHead(500); res.end(JSON.stringify({success: false, error: e.message}));
+    });
+    fbReq.end();
+    return;
+  }
+
   if (req.url === '/import-rdb-leads' && req.method === 'GET') {
     res.setHeader('Access-Control-Allow-Origin','*');
 
