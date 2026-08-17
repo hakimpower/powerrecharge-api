@@ -966,6 +966,7 @@ var server = http.createServer(function(req, res) {
         commentaire:   body.remarques    || body.comment || '',
         type_logement: body.type_logement || body.logement  || '',
         statut:    'prospect',
+        source:    'site_web',
         installateur: null, rdv: null, notes: '',
         imported: false,
         createdAt: new Date().toISOString(),
@@ -1327,7 +1328,7 @@ var server = http.createServer(function(req, res) {
         dept:         cp ? String(cp).slice(0, 2) : '',
         type_logement: body.type_logement || body.logement || '',
         statut:       'lead',
-        source:       'Facebook Lead Ads',
+        source:       'facebook',
         adresse:      '',
         ville:        '',
         borne:        '',
@@ -1578,7 +1579,7 @@ var server = http.createServer(function(req, res) {
           ville:     '',
           dept:      '',
           statut:    'prospect',
-          source:    'google_ads',
+          source:    'google',
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         };
