@@ -984,15 +984,17 @@ var server = http.createServer(function(req, res) {
       console.log('DevisUrl reçu:', dossier.devisUrl || 'ABSENT', '| Body keys:', Object.keys(body).filter(function(k){ return k.toLowerCase().includes('devis') || k.toLowerCase().includes('portal') || k.toLowerCase().includes('url'); }));
 
       // Cas spécial : payload de mise à jour devisUrl uniquement (Zapier envoie un second POST)
-      if (dossier.devisUrl && !dossier.client && body.axonautId) {
+      var rawDevisUrl = body.devisUrl || body.devis_url || body.customer_portal_url || body.customerPortalUrl || '';
+      console.log('rawDevisUrl:', rawDevisUrl, '| client:', body.client||body.nom_prenom||'', '| axonautId:', body.axonautId||'');
+      if (rawDevisUrl && body.axonautId && !(body.client || body.nom_prenom || body.adresse)) {
         var axIdDevis = String(body.axonautId);
         firestoreQuery('axonautId', axIdDevis).then(function(fsDoc){
           if (!fsDoc && body.ref) return firestoreQuery('ref', String(body.ref));
           return fsDoc;
         }).then(function(fsDoc){
           if (fsDoc) {
-            firestoreUpdate(fsDoc.id, {devisUrl: dossier.devisUrl, updatedAt: new Date().toISOString()});
-            console.log('DevisUrl mis à jour dans Firestore pour axonautId:', axIdDevis, dossier.devisUrl);
+            firestoreUpdate(fsDoc.id, {devisUrl: rawDevisUrl, updatedAt: new Date().toISOString()});
+            console.log('DevisUrl mis à jour:', axIdDevis, rawDevisUrl);
           } else {
             console.log('DevisUrl: dossier introuvable pour axonautId:', axIdDevis);
           }
