@@ -971,7 +971,7 @@ var server = http.createServer(function(req, res) {
         axonautId: String(axonautId),
         commentaire:   body.remarques    || body.comment || '',
         type_logement: body.type_logement || body.logement  || '',
-        devisUrl:  body.devisUrl  || body.customer_portal_url || '',
+        devisUrl:  body.devisUrl || body.devis_url || body.customer_portal_url || body.customerPortalUrl || body.portal_url || '',
         statut:    'prospect',
         source:    'site_web',
         installateur: null, rdv: null, notes: '',
@@ -981,6 +981,7 @@ var server = http.createServer(function(req, res) {
       };
 
       console.log('Prospect depuis Zapier:', dossier.client, '|', dossier.adresse, dossier.ville, dossier.cp, '|', dossier.tel);
+      console.log('DevisUrl reçu:', dossier.devisUrl || 'ABSENT', '| Body keys:', Object.keys(body).filter(function(k){ return k.toLowerCase().includes('devis') || k.toLowerCase().includes('portal') || k.toLowerCase().includes('url'); }));
 
       // Chercher par axonautId en priorite UNIQUEMENT
       // Ne pas chercher par email pour eviter de mettre a jour le mauvais prospect
