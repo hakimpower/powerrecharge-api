@@ -983,6 +983,24 @@ var server = http.createServer(function(req, res) {
       console.log('Prospect depuis Zapier:', dossier.client, '|', dossier.adresse, dossier.ville, dossier.cp, '|', dossier.tel);
       console.log('DevisUrl reçu:', dossier.devisUrl || 'ABSENT', '| Body keys:', Object.keys(body).filter(function(k){ return k.toLowerCase().includes('devis') || k.toLowerCase().includes('portal') || k.toLowerCase().includes('url'); }));
 
+      // Cas spécial : payload de mise à jour devisUrl uniquement (Zapier envoie un second POST)
+      if (dossier.devisUrl && !dossier.client && body.axonautId) {
+        var axIdDevis = String(body.axonautId);
+        firestoreQuery('axonautId', axIdDevis).then(function(fsDoc){
+          if (!fsDoc && body.ref) return firestoreQuery('ref', String(body.ref));
+          return fsDoc;
+        }).then(function(fsDoc){
+          if (fsDoc) {
+            firestoreUpdate(fsDoc.id, {devisUrl: dossier.devisUrl, updatedAt: new Date().toISOString()});
+            console.log('DevisUrl mis à jour dans Firestore pour axonautId:', axIdDevis, dossier.devisUrl);
+          } else {
+            console.log('DevisUrl: dossier introuvable pour axonautId:', axIdDevis);
+          }
+        }).catch(function(e){ console.warn('DevisUrl update error:', e.message); });
+        res.writeHead(200); res.end(JSON.stringify({success: true, action: 'devisUrl_updated'}));
+        return;
+      }
+
       // Chercher par axonautId en priorite UNIQUEMENT
       // Ne pas chercher par email pour eviter de mettre a jour le mauvais prospect
       var findPromise = axonautId
