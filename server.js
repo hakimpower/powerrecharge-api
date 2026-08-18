@@ -951,7 +951,7 @@ var server = http.createServer(function(req, res) {
         client:100, nom_prenom:100, name:100, tel:20, email:100,
         adresse:200, ville:80, cp:10, dept:5, borne:200,
         type_logement:80, montant:20, commentaire:500,
-        axonautId:50, axonaut_id:50, ref:50
+        axonautId:50, axonaut_id:50, ref:50, devisUrl:500
       });
 
       var cp = body.cp || body.code_postal || '';
