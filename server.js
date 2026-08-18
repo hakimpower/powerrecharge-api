@@ -971,6 +971,7 @@ var server = http.createServer(function(req, res) {
         axonautId: String(axonautId),
         commentaire:   body.remarques    || body.comment || '',
         type_logement: body.type_logement || body.logement  || '',
+        devisUrl:  body.devisUrl  || body.customer_portal_url || '',
         statut:    'prospect',
         source:    'site_web',
         installateur: null, rdv: null, notes: '',
@@ -993,7 +994,7 @@ var server = http.createServer(function(req, res) {
         if (existing) {
           // Mettre a jour avec les nouvelles infos (selective)
           var update = {updatedAt: new Date().toISOString()};
-          var fields = ['client','tel','email','adresse','ville','cp','dept','borne','axonautId','type_logement','montant','commentaire'];
+          var fields = ['client','tel','email','adresse','ville','cp','dept','borne','axonautId','type_logement','montant','commentaire','devisUrl'];
           fields.forEach(function(f) {
             if (dossier[f] && dossier[f] !== '' && dossier[f] !== '0') update[f] = dossier[f];
           });
@@ -1002,7 +1003,7 @@ var server = http.createServer(function(req, res) {
             res.writeHead(200); res.end(JSON.stringify({success: true, action: 'updated'}));
             // Sync vers Firestore : mettre a jour les champs pertinents (type_logement, borne, montant, etc.)
             var fsUpdate = {updatedAt: new Date().toISOString()};
-            ['type_logement','borne','montant','commentaire','adresse','ville','cp','dept','tel','email','client'].forEach(function(f){
+            ['type_logement','borne','montant','commentaire','adresse','ville','cp','dept','tel','email','client','devisUrl'].forEach(function(f){
               if (update[f] !== undefined && update[f] !== '' && update[f] !== 0) fsUpdate[f] = update[f];
             });
             var axId = dossier.axonautId || (existing.data && existing.data.axonautId) || '';
