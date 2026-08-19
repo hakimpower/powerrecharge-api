@@ -876,7 +876,7 @@ var server = http.createServer(function(req, res) {
         var sigStr6 = '';
         if (sigDate6 && typeof sigDate6 === 'object' && sigDate6.date) sigStr6 = sigDate6.date.slice(0,10);
         else if (sigDate6 && typeof sigDate6 === 'string') sigStr6 = sigDate6.slice(0,10);
-        var montant6 = Number(data.total_amount || data.pre_tax_amount || 0);
+        var montant6 = Number(data.pre_tax_amount || data.total_amount || 0);
         var companyId6 = data.company_id;
         console.log('Quotation updated - signe:', isSigned, '| ref:', ref6, '| montant:', montant6);
 
