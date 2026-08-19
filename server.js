@@ -988,18 +988,28 @@ var server = http.createServer(function(req, res) {
       console.log('rawDevisUrl:', rawDevisUrl, '| client:', body.client||body.nom_prenom||'', '| axonautId:', body.axonautId||'');
       if (rawDevisUrl && body.axonautId && !(body.client || body.nom_prenom || body.adresse)) {
         var axIdDevis = String(body.axonautId);
-        firestoreQuery('axonautId', axIdDevis).then(function(fsDoc){
-          if (!fsDoc && body.ref) return firestoreQuery('ref', String(body.ref));
-          return fsDoc;
-        }).then(function(fsDoc){
-          if (fsDoc) {
-            firestoreUpdate(fsDoc.id, {devisUrl: rawDevisUrl, updatedAt: new Date().toISOString()});
-            console.log('DevisUrl mis à jour:', axIdDevis, rawDevisUrl);
-          } else {
-            console.log('DevisUrl: dossier introuvable pour axonautId:', axIdDevis);
-          }
-        }).catch(function(e){ console.warn('DevisUrl update error:', e.message); });
-        res.writeHead(200); res.end(JSON.stringify({success: true, action: 'devisUrl_updated'}));
+        var refDevis = body.ref ? String(body.ref) : null;
+
+        function tryUpdateDevisUrl(attempt) {
+          firestoreQuery('axonautId', axIdDevis).then(function(fsDoc){
+            if (!fsDoc && refDevis) return firestoreQuery('ref', refDevis);
+            return fsDoc;
+          }).then(function(fsDoc){
+            if (fsDoc) {
+              firestoreUpdate(fsDoc.id, {devisUrl: rawDevisUrl, updatedAt: new Date().toISOString()});
+              console.log('DevisUrl mis à jour:', axIdDevis, rawDevisUrl);
+            } else if (attempt < 3) {
+              // Dossier pas encore créé dans Firestore — réessayer dans 10s
+              var delay = attempt * 10000;
+              console.log('DevisUrl: dossier introuvable, retry dans ' + (delay/1000) + 's (tentative ' + attempt + '/3)');
+              setTimeout(function(){ tryUpdateDevisUrl(attempt + 1); }, delay);
+            } else {
+              console.log('DevisUrl: dossier introuvable après 3 tentatives pour axonautId:', axIdDevis);
+            }
+          }).catch(function(e){ console.warn('DevisUrl update error:', e.message); });
+        }
+        tryUpdateDevisUrl(1);
+        res.writeHead(200); res.end(JSON.stringify({success: true, action: 'devisUrl_queued'}));
         return;
       }
 
