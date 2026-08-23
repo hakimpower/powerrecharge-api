@@ -1709,7 +1709,7 @@ var server = http.createServer(function(req, res) {
         var body = JSON.stringify({ query: query });
         var opts = {
           hostname: 'googleads.googleapis.com',
-          path: '/v18/customers/' + GADS_CUSTOMER_ID + '/googleAds:search',
+          path: '/v25/customers/' + GADS_CUSTOMER_ID + '/googleAds:search',
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
