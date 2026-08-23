@@ -13,6 +13,16 @@ const FB_AD_ACCOUNT = process.env.FB_AD_ACCOUNT || 'act_879279033941952';
 const FB_TOKEN      = process.env.FB_TOKEN || 'EAAkwkK5SXKABSKwAy3uSRdbDpuJ43lCljSW9ZAn5x4Gl9fyxutjo1LpAxZCBoh9DlCWiyezeLOEacC7cQoR5tGw1hdNZBc26Sl0sesm6OGciOJg80YmjG0AcltQNsOrazh8QMDwMVYkrAOmv0jP6giIvEUfrIbU68m8VKI4lvzfAQ8miwQU40oJZC7ZAp7SazFTdj';
 
 // ============================================================
+// GOOGLE ADS API
+// ============================================================
+const GADS_DEVELOPER_TOKEN = process.env.GADS_DEVELOPER_TOKEN || 'Jqy9k5vhwfuh1tgrCySsLw';
+const GADS_CLIENT_ID       = process.env.GADS_CLIENT_ID       || '339872384438-dfl7hmifahvadeplmsqdgeahh4mmhvm2.apps.googleusercontent.com';
+const GADS_CLIENT_SECRET   = process.env.GADS_CLIENT_SECRET   || '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';
+const GADS_REFRESH_TOKEN   = process.env.GADS_REFRESH_TOKEN   || '1//04B8zD7OqMN74CgYIARAAGAQSNwF-L9Iry6Hj5oWysgPUnkgqaq6O2VZr3MQbu9WKMV0HVQtE7WvbbS6wnNUoz8tzEgdGKu2-0Jc';
+const GADS_CUSTOMER_ID     = process.env.GADS_CUSTOMER_ID     || '8548958815'; // 854-895-8815 sans tirets
+const GADS_MCC_ID          = process.env.GADS_MCC_ID          || '8548958815'; // Manager ID
+
+// ============================================================
 // PROTECTION GLOBALE — évite que les erreurs non catchées tuent le process
 // ============================================================
 process.on('uncaughtException', function(err) {
@@ -1657,6 +1667,112 @@ var server = http.createServer(function(req, res) {
   // ============================================================
   // FACEBOOK MARKETING API — Stats et coût par lead
   // ============================================================
+  // ============================================================
+  // GOOGLE ADS API — Stats campagnes
+  // ============================================================
+  if (req.url.startsWith('/google-ads-stats') && req.method === 'GET') {
+    var urlParams2 = new URL('http://localhost' + req.url).searchParams;
+    var gadsDateRange = urlParams2.get('date_range') || 'LAST_30_DAYS';
+
+    // Étape 1 : Obtenir un access token via le refresh token
+    function getGadsAccessToken() {
+      return new Promise(function(resolve, reject) {
+        var postData = 'client_id=' + encodeURIComponent(GADS_CLIENT_ID)
+          + '&client_secret=' + encodeURIComponent(GADS_CLIENT_SECRET)
+          + '&refresh_token=' + encodeURIComponent(GADS_REFRESH_TOKEN)
+          + '&grant_type=refresh_token';
+        var opts = {
+          hostname: 'oauth2.googleapis.com',
+          path: '/token',
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(postData) }
+        };
+        var r = https.request(opts, function(res) {
+          var d = '';
+          res.on('data', function(c){ d += c; });
+          res.on('end', function(){
+            try {
+              var parsed = JSON.parse(d);
+              if (parsed.access_token) resolve(parsed.access_token);
+              else reject(new Error('Token error: ' + d.slice(0, 200)));
+            } catch(e) { reject(e); }
+          });
+        });
+        r.on('error', reject);
+        r.end(postData);
+      });
+    }
+
+    // Étape 2 : Requête Google Ads API (GAQL)
+    function queryGoogleAds(accessToken, query) {
+      return new Promise(function(resolve, reject) {
+        var body = JSON.stringify({ query: query });
+        var opts = {
+          hostname: 'googleads.googleapis.com',
+          path: '/v17/customers/' + GADS_CUSTOMER_ID + '/googleAds:search',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(body),
+            'Authorization': 'Bearer ' + accessToken,
+            'developer-token': GADS_DEVELOPER_TOKEN,
+            'login-customer-id': GADS_MCC_ID
+          }
+        };
+        var r = https.request(opts, function(res) {
+          var d = '';
+          res.on('data', function(c){ d += c; });
+          res.on('end', function(){
+            if (res.statusCode < 200 || res.statusCode >= 300) {
+              reject(new Error('Google Ads API ' + res.statusCode + ': ' + d.slice(0, 300)));
+              return;
+            }
+            try { resolve(JSON.parse(d)); } catch(e) { reject(e); }
+          });
+        });
+        r.on('error', reject);
+        r.end(body);
+      });
+    }
+
+    getGadsAccessToken().then(function(token) {
+      var query = 'SELECT metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.ctr, metrics.average_cpc, metrics.conversions, metrics.cost_per_conversion FROM customer WHERE segments.date DURING ' + gadsDateRange;
+      return queryGoogleAds(token, query).then(function(data) {
+        var rows = data.results || [];
+        var totals = { impressions: 0, clicks: 0, cost: 0, conversions: 0 };
+        rows.forEach(function(row) {
+          var m = row.metrics || {};
+          totals.impressions  += Number(m.impressions || 0);
+          totals.clicks       += Number(m.clicks || 0);
+          totals.cost         += Number(m.costMicros || m.cost_micros || 0);
+          totals.conversions  += Number(m.conversions || 0);
+        });
+        var spendEur = totals.cost / 1000000;
+        var ctr      = totals.impressions > 0 ? (totals.clicks / totals.impressions * 100) : 0;
+        var cpc      = totals.clicks > 0 ? (spendEur / totals.clicks) : 0;
+        var cpl      = totals.conversions > 0 ? (spendEur / totals.conversions) : null;
+        var result = {
+          success:      true,
+          period:       gadsDateRange,
+          spend:        spendEur.toFixed(2),
+          impressions:  totals.impressions,
+          clicks:       totals.clicks,
+          conversions:  totals.conversions,
+          ctr:          ctr.toFixed(2),
+          cpc:          cpc.toFixed(2),
+          costPerLead:  cpl ? cpl.toFixed(2) : null
+        };
+        console.log('Google Ads stats:', result.period, '| Dépenses:', result.spend, '€ | Clics:', result.clicks);
+        res.writeHead(200, {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'});
+        res.end(JSON.stringify(result));
+      });
+    }).catch(function(e) {
+      console.error('Google Ads stats error:', e.message);
+      res.writeHead(500); res.end(JSON.stringify({success: false, error: e.message}));
+    });
+    return;
+  }
+
   if (req.url.startsWith('/fb-stats') && req.method === 'GET') {
     // Paramètres optionnels : ?date_preset=last_30d (défaut) ou ?since=2026-01-01&until=2026-01-31
     var urlParams = new URL('http://localhost' + req.url).searchParams;
