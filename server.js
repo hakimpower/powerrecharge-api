@@ -1052,6 +1052,10 @@ var server = http.createServer(function(req, res) {
               ['type_logement','borne','montant','commentaire','adresse','ville','cp','dept','tel','client','devisUrl','axonautId','ref'].forEach(function(f){
                 if (dossier[f] && dossier[f] !== '' && dossier[f] !== '0') fsUpdate[f] = dossier[f];
               });
+              // Ne jamais écraser source facebook par site_web
+              if (fsDoc.data && (fsDoc.data.source === 'facebook' || fsDoc.data.source === 'Facebook Lead Ads' || fsDoc.data.source === 'facebook_lead')) {
+                delete fsUpdate.source;
+              }
               firestoreUpdate(fsDoc.id, fsUpdate);
               res.writeHead(200); res.end(JSON.stringify({success: true, action: 'updated_by_email'}));
               return '__handled__';
@@ -1467,6 +1471,7 @@ var server = http.createServer(function(req, res) {
               console.log('Lead FB converti en prospect via formulaire:', lead.client, '| email:', lead.email);
               var update = {
                 statut:    'prospect',
+                source:    'facebook', // Conserver l'origine FB explicitement
                 updatedAt: new Date().toISOString()
               };
               // Mettre a jour avec les infos du formulaire (plus completes)
