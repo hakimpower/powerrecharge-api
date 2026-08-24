@@ -818,36 +818,49 @@ var server = http.createServer(function(req, res) {
           }
           // Verifier dans Firestore par axonautId, puis par email, puis par nom
           var emailAxonaut = data.email || data.contact_email || '';
-          return checkFirestoreDoublon('', String(companyId5)).then(function(fsDoc) {
-            if (!fsDoc && emailAxonaut) return checkFirestoreDoublon(emailAxonaut, '');
-            return fsDoc;
-          }).then(function(fsDoc) {
-            if (!fsDoc && companyName5) {
-              return firestoreQuery('client', companyName5).then(function(d){
-                return d?{source:'firestore',field:'client',doc:d}:null;
-              }).catch(function(){return null;});
-            }
-            return fsDoc;
-          }).then(function(fsDoc) {
-            if (fsDoc) {
-              console.log('Doublon Firestore (quotation.created) pour', companyName5, '- mise a jour');
-              var fsUpdate = {ref: ref5, axonautId: String(companyId5), updatedAt: new Date().toISOString()};
-              if (montant5) fsUpdate.montant = montant5;
-              if (borneTxt5) fsUpdate.borne = borneTxt5;
-              if (fsDoc.data && fsDoc.data.statut === 'lead') {
-                fsUpdate.statut = 'prospect';
-                console.log('Lead FB converti en prospect:', companyName5);
+
+          function tryFindAndUpdateFirestore(attempt) {
+            return checkFirestoreDoublon('', String(companyId5)).then(function(fsDoc) {
+              if (!fsDoc && emailAxonaut) return checkFirestoreDoublon(emailAxonaut, '');
+              return fsDoc;
+            }).then(function(fsDoc) {
+              if (!fsDoc && companyName5) {
+                return firestoreQuery('client', companyName5).then(function(d){
+                  return d?{source:'firestore',field:'client',doc:d}:null;
+                }).catch(function(){return null;});
               }
-              return firestoreUpdate(fsDoc.doc.id, fsUpdate);
-            }
-          }).then(function(result) { if (result) return;
-            // Vraiment nouveau - creer
-            update5.client = companyName5; update5.axonautId = String(companyId5 || '');
-            update5.tel = ''; update5.email = ''; update5.adresse = ''; update5.ville = ''; update5.cp = ''; update5.dept = '';
-            update5.installateur = null; update5.rdv = null; update5.notes = ''; update5.imported = false;
-            update5.createdAt = new Date().toISOString();
-            return firebasePost('/commandes_axonaut.json', update5);
-          });
+              return fsDoc;
+            }).then(function(fsDoc) {
+              if (fsDoc) {
+                console.log('Doublon Firestore (quotation.created) pour', companyName5, '- mise a jour');
+                var fsUpdate = {ref: ref5, axonautId: String(companyId5), updatedAt: new Date().toISOString()};
+                if (montant5) fsUpdate.montant = montant5;
+                if (borneTxt5) fsUpdate.borne = borneTxt5;
+                if (fsDoc.data && fsDoc.data.statut === 'lead') {
+                  fsUpdate.statut = 'prospect';
+                  console.log('Lead FB converti en prospect:', companyName5);
+                }
+                return firestoreUpdate(fsDoc.doc.id, fsUpdate).then(function(){ return '__updated__'; });
+              }
+              // Dossier pas encore dans Firestore — retry avec délai si tentative < 3
+              if (attempt < 3) {
+                var delay = attempt * 10000;
+                console.log('quotation.created: dossier introuvable pour', companyName5, '— retry dans', delay/1000+'s (tentative '+attempt+'/3)');
+                return new Promise(function(resolve) {
+                  setTimeout(function(){ resolve(tryFindAndUpdateFirestore(attempt + 1)); }, delay);
+                });
+              }
+              // Vraiment nouveau après 3 tentatives - créer
+              console.log('quotation.created: création nouveau dossier après 3 tentatives —', companyName5);
+              update5.client = companyName5; update5.axonautId = String(companyId5 || '');
+              update5.tel = ''; update5.email = emailAxonaut; update5.adresse = ''; update5.ville = ''; update5.cp = ''; update5.dept = '';
+              update5.installateur = null; update5.rdv = null; update5.notes = ''; update5.imported = false;
+              update5.createdAt = new Date().toISOString();
+              return firebasePost('/commandes_axonaut.json', update5).then(function(){ return '__created__'; });
+            });
+          }
+
+          return tryFindAndUpdateFirestore(1);
         }).then(function() {
           // Mettre a jour Firestore aussi
           if (montant5 > 0) {
@@ -1023,15 +1036,32 @@ var server = http.createServer(function(req, res) {
         return;
       }
 
-      // Chercher par axonautId en priorite UNIQUEMENT
-      // Ne pas chercher par email pour eviter de mettre a jour le mauvais prospect
+      // Chercher par axonautId en priorite, puis par email dans Firestore
       var findPromise = axonautId
         ? findDossierByAxonautId(axonautId)
         : Promise.resolve(null);
 
       findPromise.then(function(existing) {
+        // Si pas trouvé par axonautId, vérifier par email dans Firestore pour éviter doublon
+        if (!existing && dossier.email) {
+          return firestoreQuery('email', dossier.email.toLowerCase().trim()).then(function(fsDoc) {
+            if (fsDoc) {
+              console.log('Doublon détecté par email dans Firestore:', dossier.email);
+              // Mettre à jour ce dossier existant avec les nouvelles infos
+              var fsUpdate = {updatedAt: new Date().toISOString()};
+              ['type_logement','borne','montant','commentaire','adresse','ville','cp','dept','tel','client','devisUrl','axonautId','ref'].forEach(function(f){
+                if (dossier[f] && dossier[f] !== '' && dossier[f] !== '0') fsUpdate[f] = dossier[f];
+              });
+              firestoreUpdate(fsDoc.id, fsUpdate);
+              res.writeHead(200); res.end(JSON.stringify({success: true, action: 'updated_by_email'}));
+              return '__handled__';
+            }
+            return null;
+          }).catch(function(){ return null; });
+        }
         return existing;
       }).then(function(existing) {
+        if (existing === '__handled__') return;
         if (existing) {
           // Mettre a jour avec les nouvelles infos (selective)
           var update = {updatedAt: new Date().toISOString()};
