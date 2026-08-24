@@ -9,10 +9,8 @@ const AXONAUT_KEY  = process.env.AXONAUT_KEY || '619080bd85898f22780e9d463e107e8
 // ============================================================
 // FACEBOOK MARKETING API
 // ============================================================
-const FB_AD_ACCOUNT     = process.env.FB_AD_ACCOUNT     || 'act_879279033941952';
-const FB_TOKEN          = process.env.FB_TOKEN          || 'EAAkwkK5SXKABSKwAy3uSRdbDpuJ43lCljSW9ZAn5x4Gl9fyxutjo1LpAxZCBoh9DlCWiyezeLOEacC7cQoR5tGw1hdNZBc26Sl0sesm6OGciOJg80YmjG0AcltQNsOrazh8QMDwMVYkrAOmv0jP6giIvEUfrIbU68m8VKI4lvzfAQ8miwQU40oJZC7ZAp7SazFTdj';
-const FB_PAGE_ID        = process.env.FB_PAGE_ID        || '228778393656888';
-const FB_VERIFY_TOKEN   = process.env.FB_VERIFY_TOKEN   || 'powerrecharge_fb_webhook_2026';
+const FB_AD_ACCOUNT = process.env.FB_AD_ACCOUNT || 'act_879279033941952';
+const FB_TOKEN      = process.env.FB_TOKEN || 'EAAkwkK5SXKABSKwAy3uSRdbDpuJ43lCljSW9ZAn5x4Gl9fyxutjo1LpAxZCBoh9DlCWiyezeLOEacC7cQoR5tGw1hdNZBc26Sl0sesm6OGciOJg80YmjG0AcltQNsOrazh8QMDwMVYkrAOmv0jP6giIvEUfrIbU68m8VKI4lvzfAQ8miwQU40oJZC7ZAp7SazFTdj';
 
 // ============================================================
 // GOOGLE ADS API
@@ -1361,134 +1359,6 @@ var server = http.createServer(function(req, res) {
     }).catch(function(e) {
       console.error('Ekwateur webhook error:', e.message);
       res.writeHead(500); res.end(JSON.stringify({success: false, error: e.message}));
-    });
-    return;
-  }
-
-  // ============================================================
-  // FACEBOOK LEAD ADS — Webhook natif (sans Zapier)
-  // ============================================================
-
-  // GET — Vérification du webhook par Facebook
-  if (req.url.startsWith('/fb-lead-webhook') && req.method === 'GET') {
-    var urlObj = new URL('http://localhost' + req.url);
-    var mode      = urlObj.searchParams.get('hub.mode');
-    var token     = urlObj.searchParams.get('hub.verify_token');
-    var challenge = urlObj.searchParams.get('hub.challenge');
-    if (mode === 'subscribe' && token === FB_VERIFY_TOKEN) {
-      console.log('Facebook webhook vérifié avec succès');
-      res.writeHead(200); res.end(challenge);
-    } else {
-      console.warn('Facebook webhook: vérification échouée', {mode, token});
-      res.writeHead(403); res.end('Forbidden');
-    }
-    return;
-  }
-
-  // POST — Réception des leads Facebook en temps réel
-  if (req.url === '/fb-lead-webhook' && req.method === 'POST') {
-    parseBody(req).then(function(body) {
-      console.log('Facebook Lead Webhook reçu:', JSON.stringify(body).slice(0, 300));
-
-      // Extraire les leads depuis le payload Facebook
-      var entries = body.entry || [];
-      var promises = [];
-
-      entries.forEach(function(entry) {
-        var changes = entry.changes || [];
-        changes.forEach(function(change) {
-          if (change.field !== 'leadgen') return;
-          var leadgenId = change.value && change.value.leadgen_id;
-          var formId    = change.value && change.value.form_id;
-          if (!leadgenId) return;
-
-          // Récupérer les données du lead depuis l'API Graph Facebook
-          var p = new Promise(function(resolve) {
-            var fbPath = '/v19.0/' + leadgenId + '?fields=field_data,created_time,form_id&access_token=' + FB_TOKEN;
-            var fbOpts = { hostname: 'graph.facebook.com', path: fbPath, method: 'GET' };
-            var r = https.request(fbOpts, function(fbRes) {
-              var d = '';
-              fbRes.on('data', function(c){ d += c; });
-              fbRes.on('end', function(){
-                try {
-                  var leadData = JSON.parse(d);
-                  if (leadData.error) { console.error('FB Lead API error:', leadData.error.message); resolve(null); return; }
-
-                  // Parser les champs du formulaire
-                  var fields = {};
-                  (leadData.field_data || []).forEach(function(f) {
-                    fields[f.name] = f.values && f.values[0] ? f.values[0] : '';
-                  });
-
-                  console.log('FB Lead champs reçus:', Object.keys(fields), '| valeurs:', JSON.stringify(fields).slice(0,200));
-                  var client = fields.full_name || (fields.first_name || fields.last_name
-                    ? ((fields.first_name || '') + ' ' + (fields.last_name || '')).trim()
-                    : fields.name || '');
-                  var email  = fields.email || '';
-                  var tel    = fields.phone_number || fields.phone || '';
-                  var cp     = fields.zip_code || fields.postal_code || fields.code_postal || '';
-                  // Le champ type logement peut avoir différents noms selon le formulaire FB
-                  var typeLog = fields.type_logement || fields.logement
-                    || fields.quel_est_votre_type_de_logement
-                    || fields['quel est votre type de logement']
-                    || fields.raw_quel_est_votre_type_de_logement || '';
-                  var lead = {
-                    client:        client,
-                    email:         email.toLowerCase().trim(),
-                    tel:           tel,
-                    cp:            cp,
-                    dept:          cp ? String(cp).slice(0,2) : '',
-                    type_logement: typeLog,
-                    statut:        'lead',
-                    source:        'facebook',
-                    adresse:       '',
-                    ville:         '',
-                    borne:         '',
-                    montant:       0,
-                    ref:           'FB-' + Date.now(),
-                    installateur:  null,
-                    rdv:           null,
-                    notes:         '',
-                    imported:      false,
-                    fbLeadId:      leadgenId,
-                    fbFormId:      formId || '',
-                    createdAt:     new Date().toISOString(),
-                    updatedAt:     new Date().toISOString()
-                  };
-
-                  if (!lead.client && !lead.email) { console.warn('FB Lead: données insuffisantes', fields); resolve(null); return; }
-
-                  console.log('FB Lead natif reçu:', lead.client, '|', lead.email, '|', lead.tel);
-
-                  // Vérifier doublon par email
-                  var emailCheck = lead.email ? checkFirestoreDoublon(lead.email, '') : Promise.resolve(null);
-                  emailCheck.then(function(existing) {
-                    if (existing) { console.log('FB Lead doublon ignoré:', lead.email); resolve(null); return; }
-                    return firestoreCreate(lead).then(function(doc) {
-                      console.log('FB Lead créé dans Firestore:', lead.client);
-                      // Déclencher Zapier pour les automatisations (mail, Axonaut...)
-                      if (process.env.ZAPIER_FB_LEAD_HOOK) {
-                        sendZapierNotif(process.env.ZAPIER_FB_LEAD_HOOK, lead);
-                      }
-                      resolve(doc);
-                    });
-                  }).catch(function(e){ console.error('FB Lead Firestore error:', e.message); resolve(null); });
-                } catch(e) { console.error('FB Lead parse error:', e.message); resolve(null); }
-              });
-            });
-            r.on('error', function(e){ console.error('FB Lead Graph API error:', e.message); resolve(null); });
-            r.end();
-          });
-          promises.push(p);
-        });
-      });
-
-      Promise.all(promises).then(function() {
-        res.writeHead(200); res.end('EVENT_RECEIVED');
-      });
-    }).catch(function(e) {
-      console.error('FB Lead webhook error:', e.message);
-      res.writeHead(200); res.end('EVENT_RECEIVED'); // Toujours 200 pour Facebook
     });
     return;
   }
