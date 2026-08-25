@@ -2073,6 +2073,64 @@ setInterval(checkEkwateurPreVisitesExpirees, 30 * 60000);
 // Premiere verification 1 minute apres le demarrage du serveur
 setTimeout(checkEkwateurPreVisitesExpirees, 60000);
 
+// ============================================================
+// RÉCUPÉRATION AU DÉMARRAGE — devisUrl manquants sur dossiers récents
+// Compense les pertes de webhooks pendant les redémarrages Render
+// ============================================================
+function recoverMissingDevisUrl() {
+  console.log('Récupération devisUrl manquants...');
+  // Récupérer les devis Axonaut récents (dernières 48h)
+  var axOpts = {
+    hostname: 'app.axonaut.com',
+    path: '/api/v1/quotations?limit=50',
+    method: 'GET',
+    headers: { 'apiKey': AXONAUT_KEY }
+  };
+  var r = https.request(axOpts, function(res) {
+    var d = '';
+    res.on('data', function(c){ d += c; });
+    res.on('end', function(){
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        console.log('recoverMissingDevisUrl: Axonaut HTTP', res.statusCode);
+        return;
+      }
+      try {
+        var quotations = JSON.parse(d);
+        var cutoff = Date.now() - 48 * 60 * 60 * 1000; // 48h
+        var recent = quotations.filter(function(q) {
+          var created = new Date(q.created_at || q.date || 0).getTime();
+          return created > cutoff;
+        });
+        console.log('recoverMissingDevisUrl: ' + recent.length + ' devis récents trouvés');
+        recent.forEach(function(q) {
+          if (!q.company_id || !q.customer_portal_url) return;
+          // Chercher le dossier dans Firestore
+          firestoreQuery('axonautId', String(q.company_id)).then(function(fsDoc) {
+            if (!fsDoc) return;
+            var isDeleted = fsDoc.data && fsDoc.data.deleted && fsDoc.data.deleted.booleanValue === true;
+            if (isDeleted) return;
+            // Vérifier si devisUrl est absent
+            var existingUrl = fsDoc.data && fsDoc.data.devisUrl && (fsDoc.data.devisUrl.stringValue || '');
+            if (!existingUrl && q.customer_portal_url) {
+              console.log('recoverMissingDevisUrl: mise à jour devisUrl pour', q.company_name, q.customer_portal_url);
+              firestoreUpdate(fsDoc.id, {
+                devisUrl: q.customer_portal_url,
+                updatedAt: new Date().toISOString()
+              });
+            }
+          }).catch(function(){});
+        });
+      } catch(e) { console.log('recoverMissingDevisUrl parse error:', e.message); }
+    });
+  });
+  r.on('error', function(e){ console.log('recoverMissingDevisUrl error:', e.message); });
+  r.end();
+}
+// Lancer 2 minutes après le démarrage pour laisser le serveur se stabiliser
+setTimeout(recoverMissingDevisUrl, 2 * 60000);
+// Relancer toutes les 6 heures
+setInterval(recoverMissingDevisUrl, 6 * 60 * 60000);
+
 server.listen(PORT, function() {
   console.log('PowerRecharge API v8.5 demarree sur port', PORT);
 });
