@@ -1036,23 +1036,35 @@ var server = http.createServer(function(req, res) {
         return;
       }
 
-      // Chercher par axonautId en priorite, puis par email dans Firestore
+      // Chercher par axonautId en priorité, puis par email avec retry si non trouvé
       var findPromise = axonautId
         ? findDossierByAxonautId(axonautId)
         : Promise.resolve(null);
 
+      function tryFindByEmail(attempt) {
+        return firestoreQuery('email', dossier.email.toLowerCase().trim()).then(function(fsDoc) {
+          if (fsDoc) return fsDoc;
+          if (attempt < 3) {
+            var delay = attempt * 8000;
+            console.log('formulaire-webhook: dossier email introuvable, retry dans', delay/1000+'s (tentative '+attempt+'/3) pour', dossier.email);
+            return new Promise(function(resolve) {
+              setTimeout(function(){ resolve(tryFindByEmail(attempt + 1)); }, delay);
+            });
+          }
+          return null;
+        }).catch(function(){ return null; });
+      }
+
       findPromise.then(function(existing) {
-        // Si pas trouvé par axonautId, vérifier par email dans Firestore pour éviter doublon
+        // Si pas trouvé par axonautId, vérifier par email dans Firestore avec retry
         if (!existing && dossier.email) {
-          return firestoreQuery('email', dossier.email.toLowerCase().trim()).then(function(fsDoc) {
+          return tryFindByEmail(1).then(function(fsDoc) {
             if (fsDoc) {
               console.log('Doublon détecté par email dans Firestore:', dossier.email);
-              // Mettre à jour ce dossier existant avec les nouvelles infos
               var fsUpdate = {updatedAt: new Date().toISOString()};
               ['type_logement','borne','montant','commentaire','adresse','ville','cp','dept','tel','client','devisUrl','axonautId','ref'].forEach(function(f){
                 if (dossier[f] && dossier[f] !== '' && dossier[f] !== '0') fsUpdate[f] = dossier[f];
               });
-              // Ne jamais écraser source facebook par site_web
               if (fsDoc.data && (fsDoc.data.source === 'facebook' || fsDoc.data.source === 'Facebook Lead Ads' || fsDoc.data.source === 'facebook_lead')) {
                 delete fsUpdate.source;
               }
@@ -1061,7 +1073,7 @@ var server = http.createServer(function(req, res) {
               return '__handled__';
             }
             return null;
-          }).catch(function(){ return null; });
+          });
         }
         return existing;
       }).then(function(existing) {
