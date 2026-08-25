@@ -1018,11 +1018,11 @@ var server = http.createServer(function(req, res) {
             if (!fsDoc && refDevis) return firestoreQuery('ref', refDevis);
             return fsDoc;
           }).then(function(fsDoc){
-            if (fsDoc && !fsDoc.data.deleted) {
+            var isDeleted = fsDoc && fsDoc.data && fsDoc.data.deleted && (fsDoc.data.deleted.booleanValue === true);
+            if (fsDoc && !isDeleted) {
               firestoreUpdate(fsDoc.id, {devisUrl: rawDevisUrl, updatedAt: new Date().toISOString()});
               console.log('DevisUrl mis à jour:', axIdDevis, rawDevisUrl);
-            } else if (fsDoc && fsDoc.data.deleted) {
-              // Dossier supprimé — retry pour trouver le nouveau dossier
+            } else if (fsDoc && isDeleted) {
               console.log('DevisUrl: dossier supprimé trouvé, retry pour trouver le nouveau...');
               if (attempt < 3) setTimeout(function(){ tryUpdateDevisUrl(attempt + 1); }, attempt * 10000);
             } else if (attempt < 3) {
@@ -1070,10 +1070,10 @@ var server = http.createServer(function(req, res) {
               if (!fsDoc && refVal) return firestoreQuery('ref', refVal);
               return fsDoc;
             }).then(function(fsDoc){
-              if (fsDoc && !fsDoc.data.deleted) {
+              var isDeleted = fsDoc && fsDoc.data && fsDoc.data.deleted && (fsDoc.data.deleted.booleanValue === true);
+              if (fsDoc && !isDeleted) {
                 firestoreUpdate(fsDoc.id, fsUpdate);
-              } else if (fsDoc && fsDoc.data.deleted) {
-                // Dossier supprimé → créer un nouveau dossier Firestore
+              } else if (fsDoc && isDeleted) {
                 console.log('Dossier Firestore supprimé (deleted:true) pour axonautId:', axId, '→ création nouveau dossier');
                 firestoreCreate(Object.assign({}, dossier, fsUpdate));
               } else if (!fsDoc) {
