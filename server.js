@@ -1018,9 +1018,13 @@ var server = http.createServer(function(req, res) {
             if (!fsDoc && refDevis) return firestoreQuery('ref', refDevis);
             return fsDoc;
           }).then(function(fsDoc){
-            if (fsDoc) {
+            if (fsDoc && !fsDoc.data.deleted) {
               firestoreUpdate(fsDoc.id, {devisUrl: rawDevisUrl, updatedAt: new Date().toISOString()});
               console.log('DevisUrl mis à jour:', axIdDevis, rawDevisUrl);
+            } else if (fsDoc && fsDoc.data.deleted) {
+              // Dossier supprimé — retry pour trouver le nouveau dossier
+              console.log('DevisUrl: dossier supprimé trouvé, retry pour trouver le nouveau...');
+              if (attempt < 3) setTimeout(function(){ tryUpdateDevisUrl(attempt + 1); }, attempt * 10000);
             } else if (attempt < 3) {
               // Dossier pas encore créé dans Firestore — réessayer dans 10s
               var delay = attempt * 10000;
@@ -1066,8 +1070,16 @@ var server = http.createServer(function(req, res) {
               if (!fsDoc && refVal) return firestoreQuery('ref', refVal);
               return fsDoc;
             }).then(function(fsDoc){
-              if (fsDoc) firestoreUpdate(fsDoc.id, fsUpdate);
-            }).catch(function(e){ console.warn('Firestore sync type_logement error:', e.message); });
+              if (fsDoc && !fsDoc.data.deleted) {
+                firestoreUpdate(fsDoc.id, fsUpdate);
+              } else if (fsDoc && fsDoc.data.deleted) {
+                // Dossier supprimé → créer un nouveau dossier Firestore
+                console.log('Dossier Firestore supprimé (deleted:true) pour axonautId:', axId, '→ création nouveau dossier');
+                firestoreCreate(Object.assign({}, dossier, fsUpdate));
+              } else if (!fsDoc) {
+                firestoreCreate(Object.assign({}, dossier, fsUpdate));
+              }
+            }).catch(function(e){ console.warn('Firestore sync error:', e.message); });
           }).catch(function(e){ res.writeHead(200); res.end(JSON.stringify({error: e.message})); });
         } else {
           // Creer nouveau prospect
