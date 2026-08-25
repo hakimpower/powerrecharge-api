@@ -1036,31 +1036,40 @@ var server = http.createServer(function(req, res) {
         return;
       }
 
-      // Chercher par axonautId en priorité, puis par email avec retry si non trouvé
+      // Chercher par axonautId en priorité, puis par email avec retry en arrière-plan
       var findPromise = axonautId
         ? findDossierByAxonautId(axonautId)
         : Promise.resolve(null);
 
-      function tryFindByEmail(attempt) {
-        return firestoreQuery('email', dossier.email.toLowerCase().trim()).then(function(fsDoc) {
-          if (fsDoc) return fsDoc;
-          if (attempt < 3) {
-            var delay = attempt * 8000;
-            console.log('formulaire-webhook: dossier email introuvable, retry dans', delay/1000+'s (tentative '+attempt+'/3) pour', dossier.email);
-            return new Promise(function(resolve) {
-              setTimeout(function(){ resolve(tryFindByEmail(attempt + 1)); }, delay);
+      function tryFindByEmailBackground(email, data, attempt) {
+        firestoreQuery('email', email.toLowerCase().trim()).then(function(fsDoc) {
+          if (fsDoc) {
+            console.log('Doublon détecté par email (background) attempt '+attempt+':', email);
+            var fsUpdate = {updatedAt: new Date().toISOString()};
+            ['type_logement','borne','montant','commentaire','adresse','ville','cp','dept','tel','client','devisUrl','axonautId','ref'].forEach(function(f){
+              if (data[f] && data[f] !== '' && data[f] !== '0') fsUpdate[f] = data[f];
             });
+            if (fsDoc.data && (fsDoc.data.source === 'facebook' || fsDoc.data.source === 'Facebook Lead Ads' || fsDoc.data.source === 'facebook_lead')) {
+              delete fsUpdate.source;
+            }
+            firestoreUpdate(fsDoc.id, fsUpdate);
+            console.log('Doublon mis à jour en arrière-plan:', email);
+          } else if (attempt < 4) {
+            var delay = attempt * 8000;
+            console.log('formulaire-webhook background: retry dans', delay/1000+'s (tentative '+attempt+'/4) pour', email);
+            setTimeout(function(){ tryFindByEmailBackground(email, data, attempt + 1); }, delay);
+          } else {
+            console.log('formulaire-webhook background: aucun doublon trouvé après 4 tentatives pour', email);
           }
-          return null;
-        }).catch(function(){ return null; });
+        }).catch(function(e){ console.warn('tryFindByEmailBackground error:', e.message); });
       }
 
       findPromise.then(function(existing) {
-        // Si pas trouvé par axonautId, vérifier par email dans Firestore avec retry
         if (!existing && dossier.email) {
-          return tryFindByEmail(1).then(function(fsDoc) {
+          // Vérifier d'abord rapidement (sans retry) si le dossier existe déjà
+          return firestoreQuery('email', dossier.email.toLowerCase().trim()).then(function(fsDoc) {
             if (fsDoc) {
-              console.log('Doublon détecté par email dans Firestore:', dossier.email);
+              console.log('Doublon détecté immédiatement par email:', dossier.email);
               var fsUpdate = {updatedAt: new Date().toISOString()};
               ['type_logement','borne','montant','commentaire','adresse','ville','cp','dept','tel','client','devisUrl','axonautId','ref'].forEach(function(f){
                 if (dossier[f] && dossier[f] !== '' && dossier[f] !== '0') fsUpdate[f] = dossier[f];
@@ -1072,8 +1081,10 @@ var server = http.createServer(function(req, res) {
               res.writeHead(200); res.end(JSON.stringify({success: true, action: 'updated_by_email'}));
               return '__handled__';
             }
+            // Pas trouvé immédiatement — lancer retry en arrière-plan et continuer normalement
+            setTimeout(function(){ tryFindByEmailBackground(dossier.email, dossier, 1); }, 5000);
             return null;
-          });
+          }).catch(function(){ return null; });
         }
         return existing;
       }).then(function(existing) {
