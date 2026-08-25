@@ -974,7 +974,7 @@ var server = http.createServer(function(req, res) {
         client:100, nom_prenom:100, name:100, tel:20, email:100,
         adresse:200, ville:80, cp:10, dept:5, borne:200,
         type_logement:80, montant:20, commentaire:500,
-        axonautId:50, axonaut_id:50, ref:50, devisUrl:500
+        axonautId:50, axonaut_id:50, ref:50, devisUrl:500, source:20
       });
 
       var cp = body.cp || body.code_postal || '';
@@ -996,7 +996,7 @@ var server = http.createServer(function(req, res) {
         type_logement: body.type_logement || body.logement  || '',
         devisUrl:  body.devisUrl || body.devis_url || body.customer_portal_url || body.customerPortalUrl || body.portal_url || '',
         statut:    'prospect',
-        source:    'site_web',
+        source:    body.source || 'site_web',
         installateur: null, rdv: null, notes: '',
         imported: false,
         createdAt: new Date().toISOString(),
@@ -1051,16 +1051,16 @@ var server = http.createServer(function(req, res) {
         if (existing) {
           // Mettre a jour avec les nouvelles infos (selective)
           var update = {updatedAt: new Date().toISOString()};
-          var fields = ['client','tel','email','adresse','ville','cp','dept','borne','axonautId','type_logement','montant','commentaire','devisUrl'];
+          var fields = ['client','tel','email','adresse','ville','cp','dept','borne','axonautId','type_logement','montant','commentaire','devisUrl','source'];
           fields.forEach(function(f) {
             if (dossier[f] && dossier[f] !== '' && dossier[f] !== '0') update[f] = dossier[f];
           });
           console.log('Mise a jour prospect existant:', existing.data.client);
           firebasePatch('/commandes_axonaut/' + existing.key + '.json', update).then(function() {
             res.writeHead(200); res.end(JSON.stringify({success: true, action: 'updated'}));
-            // Sync vers Firestore : mettre a jour les champs pertinents (type_logement, borne, montant, etc.)
+            // Sync vers Firestore : mettre a jour les champs pertinents
             var fsUpdate = {updatedAt: new Date().toISOString()};
-            ['type_logement','borne','montant','commentaire','adresse','ville','cp','dept','tel','email','client','devisUrl'].forEach(function(f){
+            ['type_logement','borne','montant','commentaire','adresse','ville','cp','dept','tel','email','client','devisUrl','source'].forEach(function(f){
               if (update[f] !== undefined && update[f] !== '' && update[f] !== 0) fsUpdate[f] = update[f];
             });
             var axId = dossier.axonautId || (existing.data && existing.data.axonautId) || '';
