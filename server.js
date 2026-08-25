@@ -1041,54 +1041,9 @@ var server = http.createServer(function(req, res) {
         ? findDossierByAxonautId(axonautId)
         : Promise.resolve(null);
 
-      function tryFindByEmailBackground(email, data, attempt) {
-        firestoreQuery('email', email.toLowerCase().trim()).then(function(fsDoc) {
-          if (fsDoc) {
-            console.log('Doublon détecté par email (background) attempt '+attempt+':', email);
-            var fsUpdate = {updatedAt: new Date().toISOString()};
-            ['type_logement','borne','montant','commentaire','adresse','ville','cp','dept','tel','client','devisUrl','axonautId','ref'].forEach(function(f){
-              if (data[f] && data[f] !== '' && data[f] !== '0') fsUpdate[f] = data[f];
-            });
-            if (fsDoc.data && (fsDoc.data.source === 'facebook' || fsDoc.data.source === 'Facebook Lead Ads' || fsDoc.data.source === 'facebook_lead')) {
-              delete fsUpdate.source;
-            }
-            firestoreUpdate(fsDoc.id, fsUpdate);
-            console.log('Doublon mis à jour en arrière-plan:', email);
-          } else if (attempt < 4) {
-            var delay = attempt * 8000;
-            console.log('formulaire-webhook background: retry dans', delay/1000+'s (tentative '+attempt+'/4) pour', email);
-            setTimeout(function(){ tryFindByEmailBackground(email, data, attempt + 1); }, delay);
-          } else {
-            console.log('formulaire-webhook background: aucun doublon trouvé après 4 tentatives pour', email);
-          }
-        }).catch(function(e){ console.warn('tryFindByEmailBackground error:', e.message); });
-      }
-
       findPromise.then(function(existing) {
-        if (!existing && dossier.email) {
-          // Vérifier d'abord rapidement (sans retry) si le dossier existe déjà
-          return firestoreQuery('email', dossier.email.toLowerCase().trim()).then(function(fsDoc) {
-            if (fsDoc) {
-              console.log('Doublon détecté immédiatement par email:', dossier.email);
-              var fsUpdate = {updatedAt: new Date().toISOString()};
-              ['type_logement','borne','montant','commentaire','adresse','ville','cp','dept','tel','client','devisUrl','axonautId','ref'].forEach(function(f){
-                if (dossier[f] && dossier[f] !== '' && dossier[f] !== '0') fsUpdate[f] = dossier[f];
-              });
-              if (fsDoc.data && (fsDoc.data.source === 'facebook' || fsDoc.data.source === 'Facebook Lead Ads' || fsDoc.data.source === 'facebook_lead')) {
-                delete fsUpdate.source;
-              }
-              firestoreUpdate(fsDoc.id, fsUpdate);
-              res.writeHead(200); res.end(JSON.stringify({success: true, action: 'updated_by_email'}));
-              return '__handled__';
-            }
-            // Pas trouvé immédiatement — lancer retry en arrière-plan et continuer normalement
-            setTimeout(function(){ tryFindByEmailBackground(dossier.email, dossier, 1); }, 5000);
-            return null;
-          }).catch(function(){ return null; });
-        }
         return existing;
       }).then(function(existing) {
-        if (existing === '__handled__') return;
         if (existing) {
           // Mettre a jour avec les nouvelles infos (selective)
           var update = {updatedAt: new Date().toISOString()};
