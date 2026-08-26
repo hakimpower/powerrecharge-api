@@ -1817,7 +1817,7 @@ var server = http.createServer(function(req, res) {
 
     var fields = 'spend,impressions,clicks,cpm,cpc,ctr,actions,cost_per_action_type,reach';
     var fbPath = '/v19.0/' + FB_AD_ACCOUNT + '/insights?fields=' + encodeURIComponent(fields)
-      + '&' + encodeURIComponent(timeRange)
+      + '&' + timeRange
       + timeIncrement
       + '&access_token=' + FB_TOKEN;
 
