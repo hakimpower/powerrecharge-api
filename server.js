@@ -2123,11 +2123,18 @@ function recoverMissingDevisUrl() {
       } catch(e) { console.log('recoverMissingDevisUrl parse error:', e.message); }
     });
   });
-  r.on('error', function(e){ console.log('recoverMissingDevisUrl error:', e.message); });
+  r.on('error', function(e){
+    console.log('recoverMissingDevisUrl error:', e.message);
+    // Retry dans 3 minutes si erreur réseau
+    if (e.code === 'ENOTFOUND' || e.code === 'EAI_AGAIN') {
+      console.log('recoverMissingDevisUrl: retry dans 3min...');
+      setTimeout(recoverMissingDevisUrl, 3 * 60000);
+    }
+  });
   r.end();
 }
-// Lancer 2 minutes après le démarrage pour laisser le serveur se stabiliser
-setTimeout(recoverMissingDevisUrl, 2 * 60000);
+// Lancer 5 minutes après le démarrage pour laisser le réseau se stabiliser
+setTimeout(recoverMissingDevisUrl, 5 * 60000);
 // Relancer toutes les 6 heures
 setInterval(recoverMissingDevisUrl, 6 * 60 * 60000);
 
