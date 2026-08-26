@@ -1097,6 +1097,8 @@ var server = http.createServer(function(req, res) {
               borne:   dossier.borne || 'A definir'
             });
             res.writeHead(200); res.end(JSON.stringify({success: true, action: 'created'}));
+            // Créer aussi dans Firestore avec source pour ne pas attendre quotation.created
+            firestoreCreate(dossier).catch(function(e){ console.warn('Firestore create prospect error:', e.message); });
           }).catch(function(e){ res.writeHead(200); res.end(JSON.stringify({error: e.message})); });
         }
       }).catch(function(e) {
