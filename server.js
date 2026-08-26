@@ -1024,14 +1024,15 @@ var server = http.createServer(function(req, res) {
               console.log('DevisUrl mis à jour:', axIdDevis, rawDevisUrl);
             } else if (fsDoc && isDeleted) {
               console.log('DevisUrl: dossier supprimé trouvé, retry pour trouver le nouveau...');
-              if (attempt < 3) setTimeout(function(){ tryUpdateDevisUrl(attempt + 1); }, attempt * 10000);
-            } else if (attempt < 3) {
-              // Dossier pas encore créé dans Firestore — réessayer dans 10s
-              var delay = attempt * 10000;
-              console.log('DevisUrl: dossier introuvable, retry dans ' + (delay/1000) + 's (tentative ' + attempt + '/3)');
+              if (attempt < 6) setTimeout(function(){ tryUpdateDevisUrl(attempt + 1); }, 15000);
+            } else if (attempt < 6) {
+              // Délais progressifs : 15s, 30s, 60s, 120s, 180s
+              var delays = [15000, 30000, 60000, 120000, 180000];
+              var delay = delays[attempt - 1] || 60000;
+              console.log('DevisUrl: dossier introuvable, retry dans ' + (delay/1000) + 's (tentative ' + attempt + '/6)');
               setTimeout(function(){ tryUpdateDevisUrl(attempt + 1); }, delay);
             } else {
-              console.log('DevisUrl: dossier introuvable après 3 tentatives pour axonautId:', axIdDevis);
+              console.log('DevisUrl: dossier introuvable après 6 tentatives pour axonautId:', axIdDevis);
             }
           }).catch(function(e){ console.warn('DevisUrl update error:', e.message); });
         }
