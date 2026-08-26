@@ -1812,9 +1812,13 @@ var server = http.createServer(function(req, res) {
       ? 'time_range={"since":"' + since + '","until":"' + until + '"}'
       : 'date_preset=' + datePreset;
 
+    var byDay = urlParams.get('by_day') === '1';
+    var timeIncrement = byDay ? '&time_increment=1' : '';
+
     var fields = 'spend,impressions,clicks,cpm,cpc,ctr,actions,cost_per_action_type,reach';
     var fbPath = '/v19.0/' + FB_AD_ACCOUNT + '/insights?fields=' + encodeURIComponent(fields)
       + '&' + encodeURIComponent(timeRange)
+      + timeIncrement
       + '&access_token=' + FB_TOKEN;
 
     var fbOptions = {
@@ -1835,6 +1839,27 @@ var server = http.createServer(function(req, res) {
             return;
           }
           var insights = parsed.data && parsed.data[0] ? parsed.data[0] : {};
+          // Mode by_day : retourner toutes les données journalières
+          if (byDay) {
+            var days = (parsed.data || []).map(function(day) {
+              var dayLeads = 0, dayCpl = null;
+              if (day.actions) day.actions.forEach(function(a){ if(a.action_type==='lead'||a.action_type==='leadgen_grouped') dayLeads=parseInt(a.value)||0; });
+              if (day.cost_per_action_type) day.cost_per_action_type.forEach(function(a){ if(a.action_type==='lead'||a.action_type==='leadgen_grouped') dayCpl=parseFloat(a.value).toFixed(2); });
+              return {
+                date:        day.date_start,
+                spend:       parseFloat(day.spend||0).toFixed(2),
+                impressions: parseInt(day.impressions||0),
+                clicks:      parseInt(day.clicks||0),
+                leads:       dayLeads,
+                ctr:         parseFloat(day.ctr||0).toFixed(2),
+                cpc:         parseFloat(day.cpc||0).toFixed(2),
+                costPerLead: dayCpl || (dayLeads>0?(parseFloat(day.spend||0)/dayLeads).toFixed(2):null)
+              };
+            });
+            res.writeHead(200, {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'});
+            res.end(JSON.stringify({success: true, period: datePreset||(since+' → '+until), days: days}));
+            return;
+          }
           // Extraire le coût par lead (action type = lead)
           var costPerLead = null;
           var leads = 0;
