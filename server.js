@@ -1701,6 +1701,15 @@ var server = http.createServer(function(req, res) {
   if (req.url.startsWith('/google-ads-stats') && req.method === 'GET') {
     var urlParams2 = new URL('http://localhost' + req.url).searchParams;
     var gadsDateRange = urlParams2.get('date_range') || 'LAST_30_DAYS';
+    var gadsSince = urlParams2.get('since');
+    var gadsUntil = urlParams2.get('until');
+    // Construire la clause WHERE selon le mode
+    var gadsWhereClause;
+    if (gadsSince && gadsUntil) {
+      gadsWhereClause = "segments.date BETWEEN '" + gadsSince + "' AND '" + gadsUntil + "'";
+    } else {
+      gadsWhereClause = 'segments.date DURING ' + gadsDateRange;
+    }
 
     // Étape 1 : Obtenir un access token via le refresh token
     function getGadsAccessToken() {
@@ -1764,7 +1773,7 @@ var server = http.createServer(function(req, res) {
     }
 
     getGadsAccessToken().then(function(token) {
-      var query = 'SELECT metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.ctr, metrics.average_cpc, metrics.conversions, metrics.cost_per_conversion FROM customer WHERE segments.date DURING ' + gadsDateRange;
+      var query = 'SELECT metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.ctr, metrics.average_cpc, metrics.conversions, metrics.cost_per_conversion FROM customer WHERE ' + gadsWhereClause;
       return queryGoogleAds(token, query).then(function(data) {
         var rows = data.results || [];
         var totals = { impressions: 0, clicks: 0, cost: 0, conversions: 0 };
