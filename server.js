@@ -1431,14 +1431,14 @@ var server = http.createServer(function(req, res) {
       // Recuperer la ville depuis le code postal via API gouvernementale
       function getVilleFromCP(cp) {
         return new Promise(function(resolve) {
-          // Extraire les chiffres pour le lookup (gérer "78 - Yvelines" ou "78000")
-          var cpForLookup = String(cp).match(/^\d{5}$/) ? cp : (String(cp).match(/^(\d{2,3})/) || ['',''])[1];
-          if (!cpForLookup) { resolve(''); return; }
-          // Si c'est un dept (2 chiffres), construire un CP valide
-          var cpQuery = cpForLookup.length <= 3 ? cpForLookup.padEnd(5, '0') : cpForLookup;
+          // Si format Meta "78 - Yvelines" → utiliser directement, pas de lookup
+          if (/^\d{2,3}\s*-/.test(String(cp))) { resolve(cp); return; }
+          // Si CP à 5 chiffres → lookup ville
+          var cpClean = String(cp).replace(/[^0-9]/g, '');
+          if (!cpClean || cpClean.length < 4) { resolve(''); return; }
           var opts = {
             hostname: 'geo.api.gouv.fr',
-            path: '/communes?codePostal=' + encodeURIComponent(cpQuery) + '&fields=nom&limit=1',
+            path: '/communes?codePostal=' + encodeURIComponent(cpClean) + '&fields=nom&limit=1',
             method: 'GET'
           };
           var req2 = https.request(opts, function(res2) {
