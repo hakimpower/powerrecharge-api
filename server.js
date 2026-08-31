@@ -469,7 +469,12 @@ function findDossierByEmail(email) {
     var keys = Object.keys(data);
     for (var i = 0; i < keys.length; i++) {
       var d = data[keys[i]];
-      if (d && d.email && d.email.toLowerCase() === email.toLowerCase()) return {key: keys[i], data: d};
+      // Ne bloquer que si c'est un lead/prospect FB (source facebook ou ref FB-)
+      // Les entrées venant d'Axonaut (axonautId présent, source absente) ne bloquent pas les leads FB
+      if (d && d.email && d.email.toLowerCase() === email.toLowerCase()) {
+        var isFbLead = d.source === 'facebook' || (d.ref && String(d.ref).indexOf('FB-') === 0);
+        if (isFbLead) return {key: keys[i], data: d};
+      }
     }
     return null;
   });
@@ -1394,13 +1399,17 @@ var server = http.createServer(function(req, res) {
     parseBody(req).then(function(body) {
       console.log('Lead Facebook recu:', JSON.stringify(body).slice(0, 400));
 
-      var cp = body.cp || body.code_postal || body.zip || '';
+      var cpRaw = body.cp || body.code_postal || body.zip || body.postal_code || '';
+      var cpStr = String(cpRaw).trim();
+      var deptMatch = cpStr.match(/^(\d{2,3})/);
+      var dept = deptMatch ? deptMatch[1] : '';
+      var cp = cpStr; // Stocker la valeur Meta telle quelle
       var lead = {
         client:       body.client || body.nom_prenom || body.full_name || body.name || '',
-        email:        body.email  || body.mail || '',
-        tel:          body.tel    || body.telephone || body.phone || '',
-        cp:           String(cp),
-        dept:         cp ? String(cp).slice(0, 2) : '',
+        email:        (body.email  || body.mail || '').toLowerCase().trim(),
+        tel:          (body.tel    || body.telephone || body.phone || '').replace(/[^0-9+\s]/g, ''),
+        cp:           cp,
+        dept:         dept,
         type_logement: body.type_logement || body.logement || '',
         statut:       'lead',
         source:       'facebook',
@@ -1411,7 +1420,7 @@ var server = http.createServer(function(req, res) {
         ref:          'FB-' + Date.now(),
         installateur: null,
         rdv:          null,
-        notes:        '',
+        notes:        body.notes || '',
         imported:     false,
         createdAt:    new Date().toISOString(),
         updatedAt:    new Date().toISOString()
@@ -1422,10 +1431,14 @@ var server = http.createServer(function(req, res) {
       // Recuperer la ville depuis le code postal via API gouvernementale
       function getVilleFromCP(cp) {
         return new Promise(function(resolve) {
-          if (!cp) { resolve(''); return; }
+          // Extraire les chiffres pour le lookup (gérer "78 - Yvelines" ou "78000")
+          var cpForLookup = String(cp).match(/^\d{5}$/) ? cp : (String(cp).match(/^(\d{2,3})/) || ['',''])[1];
+          if (!cpForLookup) { resolve(''); return; }
+          // Si c'est un dept (2 chiffres), construire un CP valide
+          var cpQuery = cpForLookup.length <= 3 ? cpForLookup.padEnd(5, '0') : cpForLookup;
           var opts = {
             hostname: 'geo.api.gouv.fr',
-            path: '/communes?codePostal=' + cp + '&fields=nom&limit=1',
+            path: '/communes?codePostal=' + encodeURIComponent(cpQuery) + '&fields=nom&limit=1',
             method: 'GET'
           };
           var req2 = https.request(opts, function(res2) {
@@ -1458,26 +1471,18 @@ var server = http.createServer(function(req, res) {
           : Promise.resolve(null);
         return emailCheck.then(function(fsDoc) {
           if (fsDoc) {
-            var existingStatut = fsDoc.doc && fsDoc.doc.data ? fsDoc.doc.data.statut : '';
-            // Si c'etait un lead FB → passer en prospect avec les nouvelles infos
+            var fsData = fsDoc.doc && fsDoc.doc.data ? fsDoc.doc.data : {};
+            var existingStatut = fsData.statut && fsData.statut.stringValue
+              ? fsData.statut.stringValue
+              : (typeof fsData.statut === 'string' ? fsData.statut : '');
+            // Si c'etait un lead FB → ignorer le doublon (c'est normal de revoir le même lead)
             if (existingStatut === 'lead') {
-              console.log('Lead FB converti en prospect via formulaire:', lead.client, '| email:', lead.email);
-              var update = {
-                statut:    'prospect',
-                source:    'facebook', // Conserver l'origine FB explicitement
-                updatedAt: new Date().toISOString()
-              };
-              // Mettre a jour avec les infos du formulaire (plus completes)
-              if (lead.client) update.client = lead.client;
-              if (lead.tel)    update.tel    = lead.tel;
-              if (lead.adresse) update.adresse = lead.adresse;
-              if (lead.cp)     { update.cp = lead.cp; update.dept = lead.cp.slice(0,2); }
-              if (lead.type_logement) update.type_logement = lead.type_logement;
-              return firestoreUpdate(fsDoc.doc.id, update).then(function() {
-                res.writeHead(200); res.end(JSON.stringify({success: true, action: 'lead_converted_to_prospect'}));
-              });
+              console.log('Lead FB deja en statut lead, ignoré (doublon normal):', lead.email);
+              res.writeHead(200); res.end(JSON.stringify({success: true, action: 'already_exists_lead'}));
+              return;
             }
-            console.log('Dossier deja existant (Firestore email):', lead.client);
+            // Si c'est un prospect ou plus avancé → ne pas écraser
+            console.log('Dossier deja existant (Firestore email), statut:', existingStatut, '|', lead.client);
             res.writeHead(200); res.end(JSON.stringify({success: true, action: 'already_exists_firestore'}));
             return;
           }
