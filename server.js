@@ -847,7 +847,7 @@ var server = http.createServer(function(req, res) {
         return findDossierByAxonautId(companyId5).then(function(existing) {
           var update5 = {
             ref: ref5,
-            statut: 'prospect',
+            statut: 'devis_envoye',
             updatedAt: new Date().toISOString()
           };
           if (borneTxt5) update5.borne = borneTxt5;
@@ -880,9 +880,11 @@ var server = http.createServer(function(req, res) {
                 var fsStatut = fsDoc.doc && fsDoc.doc.data && fsDoc.doc.data.statut
                   ? (fsDoc.doc.data.statut.stringValue || fsDoc.doc.data.statut || '')
                   : '';
-                if (fsStatut === 'lead') {
-                  fsUpdate.statut = 'prospect';
-                  console.log('Lead converti en prospect:', companyName5);
+                // Passer en devis_envoye seulement si statut pas encore plus avancé
+                var statutsAvances = ['new','devis_signe','affected','accepted','rdv','progress','done','sav','cloture'];
+                if (statutsAvances.indexOf(fsStatut) === -1) {
+                  fsUpdate.statut = 'devis_envoye';
+                  console.log('Statut mis à jour → devis_envoye:', companyName5);
                 }
                 return firestoreUpdate(fsDoc.doc.id, fsUpdate).then(function(){ return '__updated__'; });
               }
