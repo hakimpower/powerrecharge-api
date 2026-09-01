@@ -529,6 +529,41 @@ function getAxonautAddresses(companyId) {
 }
 
 
+// Récupérer les infos complètes d'un prospect Axonaut (pour création manuelle de devis)
+function getAxonautCompanyInfo(companyId) {
+  if (!companyId) return Promise.resolve(null);
+  return new Promise(function(resolve) {
+    var options = {
+      hostname: 'app.axonaut.com',
+      path: '/api/v1/companies/' + companyId,
+      method: 'GET',
+      headers: {'apiKey': AXONAUT_KEY}
+    };
+    var req = https.request(options, function(res) {
+      var d = '';
+      res.on('data', function(c){ d += c; });
+      res.on('end', function(){
+        try {
+          var co = JSON.parse(d);
+          getAxonautAddresses(companyId).then(function(addr) {
+            var tel = '';
+            if (co.phone_numbers && co.phone_numbers.length) tel = co.phone_numbers[0].phone_number || '';
+            var email = '';
+            if (co.emails && co.emails.length) email = co.emails[0].email || '';
+            if (!email && co.contacts && co.contacts.length && co.contacts[0].emails && co.contacts[0].emails.length) {
+              email = co.contacts[0].emails[0].email || '';
+            }
+            resolve({ tel: tel, email: email, adresse: addr.adresse||'', ville: addr.ville||'', cp: addr.cp||'' });
+          });
+        } catch(e) { resolve(null); }
+      });
+    });
+    req.on('error', function(){ resolve(null); });
+    req.setTimeout(8000, function(){ req.destroy(); resolve(null); });
+    req.end();
+  });
+}
+
 // ═══════════════════════════════════════
 // ZAPIER NOTIFICATION WEBHOOKS
 // ═══════════════════════════════════════
@@ -841,9 +876,13 @@ var server = http.createServer(function(req, res) {
                 var fsUpdate = {ref: ref5, axonautId: String(companyId5), updatedAt: new Date().toISOString()};
                 if (montant5) fsUpdate.montant = montant5;
                 if (borneTxt5) fsUpdate.borne = borneTxt5;
-                if (fsDoc.data && fsDoc.data.statut === 'lead') {
+                // Lire le statut (format Firestore REST ou objet direct)
+                var fsStatut = fsDoc.doc && fsDoc.doc.data && fsDoc.doc.data.statut
+                  ? (fsDoc.doc.data.statut.stringValue || fsDoc.doc.data.statut || '')
+                  : '';
+                if (fsStatut === 'lead') {
                   fsUpdate.statut = 'prospect';
-                  console.log('Lead FB converti en prospect:', companyName5);
+                  console.log('Lead converti en prospect:', companyName5);
                 }
                 return firestoreUpdate(fsDoc.doc.id, fsUpdate).then(function(){ return '__updated__'; });
               }
@@ -855,13 +894,34 @@ var server = http.createServer(function(req, res) {
                   setTimeout(function(){ resolve(tryFindAndUpdateFirestore(attempt + 1)); }, delay);
                 });
               }
-              // Vraiment nouveau après 3 tentatives - créer
+              // Vraiment nouveau après 3 tentatives - créer dans Firestore ET RDB
               console.log('quotation.created: création nouveau dossier après 3 tentatives —', companyName5);
               update5.client = companyName5; update5.axonautId = String(companyId5 || '');
               update5.tel = ''; update5.email = emailAxonaut; update5.adresse = ''; update5.ville = ''; update5.cp = ''; update5.dept = '';
               update5.installateur = null; update5.rdv = null; update5.notes = ''; update5.imported = false;
+              update5.source = update5.source || 'axonaut';
               update5.createdAt = new Date().toISOString();
-              return firebasePost('/commandes_axonaut.json', update5).then(function(){ return '__created__'; });
+              // Récupérer les infos complètes depuis Axonaut avant de créer
+              return getAxonautCompanyInfo(companyId5).then(function(info) {
+                if (info) {
+                  if (info.tel)     update5.tel     = info.tel;
+                  if (info.email)   update5.email   = info.email || emailAxonaut;
+                  if (info.adresse) update5.adresse = info.adresse;
+                  if (info.ville)   update5.ville   = info.ville;
+                  if (info.cp)      { update5.cp = info.cp; update5.dept = String(info.cp).slice(0,2); }
+                }
+                // Créer dans Firestore (visible dans l'appli)
+                return firestoreCreate(update5).then(function(fsResult) {
+                  var newDocId = fsResult && fsResult.name ? fsResult.name.split('/').pop() : null;
+                  // Créer aussi dans RDB pour le suivi
+                  return firebasePost('/commandes_axonaut.json', Object.assign({}, update5, {firestoreId: newDocId}));
+                });
+              }).catch(function() {
+                // Fallback sans info Axonaut
+                return firestoreCreate(update5).then(function() {
+                  return firebasePost('/commandes_axonaut.json', update5);
+                });
+              }).then(function(){ return '__created_firestore__'; });
             });
           }
 
