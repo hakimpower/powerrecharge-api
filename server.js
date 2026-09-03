@@ -722,16 +722,34 @@ var server = http.createServer(function(req, res) {
           console.log('Company update avec adresse:', update2.client, update2.tel, update2.email, '|', update2.adresse, update2.ville, update2.cp);
           return findDossierByAxonautId(data.id).then(function(existing) {
             if (existing) {
-              return firebasePatch('/commandes_axonaut/' + existing.key + '.json', selectiveUpdate(existing.data, update2));
+              // Mettre à jour RDB
+              firebasePatch('/commandes_axonaut/' + existing.key + '.json', selectiveUpdate(existing.data, update2));
+            } else {
+              // Créer dans RDB si pas trouvé
+              update2.statut = 'prospect';
+              update2.borne = ''; update2.montant = 0; update2.ref = 'PROSPECT-' + data.id;
+              update2.installateur = null; update2.rdv = null; update2.notes = '';
+              update2.imported = false; update2.createdAt = new Date().toISOString();
+              firebasePost('/commandes_axonaut.json', update2).then(function(result) {
+                try { var resultKey = JSON.parse(result).name; applyPendingAddress(String(data.id), resultKey); } catch(e){}
+              });
             }
-            // Creer si pas trouve
-            update2.statut = 'prospect';
-            update2.borne = ''; update2.montant = 0; update2.ref = 'PROSPECT-' + data.id;
-            update2.installateur = null; update2.rdv = null; update2.notes = '';
-            update2.imported = false; update2.createdAt = new Date().toISOString();
-            return firebasePost('/commandes_axonaut.json', update2).then(function(result) {
-              var resultKey = JSON.parse(result).name;
-              return applyPendingAddress(String(data.id), resultKey);
+            // Toujours mettre à jour Firestore si dossier trouvé par axonautId
+            return checkFirestoreDoublon('', String(data.id)).then(function(fsDoc) {
+              if (!fsDoc && update2.email) return checkFirestoreDoublon(update2.email, '');
+              return fsDoc;
+            }).then(function(fsDoc) {
+              if (!fsDoc) return;
+              var fsUpdate = { updatedAt: new Date().toISOString() };
+              if (update2.client) fsUpdate.client = update2.client;
+              if (update2.tel)    fsUpdate.tel    = update2.tel;
+              if (update2.email)  fsUpdate.email  = update2.email;
+              if (update2.adresse) fsUpdate.adresse = update2.adresse;
+              if (update2.ville)   fsUpdate.ville   = update2.ville;
+              if (update2.cp)      { fsUpdate.cp = update2.cp; fsUpdate.dept = update2.dept; }
+              if (!fsDoc.doc.data || !fsDoc.doc.data.axonautId) fsUpdate.axonautId = String(data.id);
+              console.log('Company update Firestore:', fsDoc.doc.id, fsUpdate.client);
+              return firestoreUpdate(fsDoc.doc.id, fsUpdate);
             });
           });
         }).then(function() {
@@ -1109,15 +1127,37 @@ var server = http.createServer(function(req, res) {
         return;
       }
 
-      // Chercher par axonautId en priorité, puis par email avec retry en arrière-plan
+      // Chercher par axonautId en priorité dans RDB puis Firestore, puis par email
       var findPromise = axonautId
-        ? findDossierByAxonautId(axonautId)
+        ? findDossierByAxonautId(axonautId).then(function(existing) {
+            if (existing) return existing;
+            // Pas dans RDB → chercher dans Firestore par axonautId
+            return firestoreQuery('axonautId', String(axonautId)).then(function(fsDoc) {
+              if (!fsDoc) return null;
+              var isDeleted = fsDoc.data && fsDoc.data.deleted && fsDoc.data.deleted.booleanValue === true;
+              if (isDeleted) return null;
+              // Trouvé dans Firestore → simuler le format RDB pour la suite
+              console.log('Formulaire: dossier trouvé dans Firestore par axonautId:', axonautId, fsDoc.id);
+              return {key: '__firestore__', firestoreId: fsDoc.id, data: {axonautId: String(axonautId), client: fsDoc.data && fsDoc.data.client && fsDoc.data.client.stringValue ? fsDoc.data.client.stringValue : ''}};
+            }).catch(function(){ return null; });
+          })
         : Promise.resolve(null);
 
       findPromise.then(function(existing) {
         return existing;
       }).then(function(existing) {
         if (existing) {
+          // Si trouvé uniquement dans Firestore (pas dans RDB)
+          if (existing.key === '__firestore__') {
+            var fsId = existing.firestoreId;
+            var fsUpd = {updatedAt: new Date().toISOString()};
+            ['client','tel','email','adresse','ville','cp','dept','borne','axonautId','type_logement','montant','commentaire','devisUrl','source'].forEach(function(f){
+              if (dossier[f] && dossier[f] !== '' && dossier[f] !== '0') fsUpd[f] = dossier[f];
+            });
+            firestoreUpdate(fsId, fsUpd).catch(function(){});
+            res.writeHead(200); res.end(JSON.stringify({success: true, action: 'updated_firestore'}));
+            return;
+          }
           // Mettre a jour avec les nouvelles infos (selective)
           var update = {updatedAt: new Date().toISOString()};
           var fields = ['client','tel','email','adresse','ville','cp','dept','borne','axonautId','type_logement','montant','commentaire','devisUrl','source'];
