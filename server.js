@@ -18,7 +18,7 @@ const FB_TOKEN      = process.env.FB_TOKEN || 'EAAkwkK5SXKABSKwAy3uSRdbDpuJ43lCl
 const GADS_DEVELOPER_TOKEN = process.env.GADS_DEVELOPER_TOKEN || 'Jqy9k5vhwfuh1tgrCySsLw';
 const GADS_CLIENT_ID       = process.env.GADS_CLIENT_ID       || '339872384438-dfl7hmifahvadeplmsqdgeahh4mmhvm2.apps.googleusercontent.com';
 const GADS_CLIENT_SECRET   = process.env.GADS_CLIENT_SECRET   || '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';
-const GADS_REFRESH_TOKEN   = process.env.GADS_REFRESH_TOKEN   || '1//04OtChlWmw1RzCgYIARAAGAQSNwF-L9IrIBWzGNWNGVGkHlIY1Ixk16kVkSPmsRNfw9A12fOHXxS5v4c_nDDQmrEA37akU_48YtM';
+const GADS_REFRESH_TOKEN   = process.env.GADS_REFRESH_TOKEN   || '';
 const GADS_CUSTOMER_ID     = process.env.GADS_CUSTOMER_ID     || '8548958815'; // compte client contact.powerrecharge@gmail.com
 const GADS_MCC_ID          = process.env.GADS_MCC_ID          || '1045381552'; // Manager PowerRecharge Manager
 
@@ -881,10 +881,11 @@ var server = http.createServer(function(req, res) {
                   ? (fsDoc.doc.data.statut.stringValue || fsDoc.doc.data.statut || '')
                   : '';
                 // Passer en devis_envoye seulement si statut pas encore plus avancé
-                var statutsAvances = ['new','devis_signe','affected','accepted','rdv','progress','done','sav','cloture'];
+                var statutsAvances = ['devis_envoye','new','devis_signe','affected','accepted','rdv','progress','done','sav','cloture'];
                 if (statutsAvances.indexOf(fsStatut) === -1) {
+                  // lead, prospect ou vide → passer en devis_envoye
                   fsUpdate.statut = 'devis_envoye';
-                  console.log('Statut mis à jour → devis_envoye:', companyName5);
+                  console.log('Statut mis à jour → devis_envoye:', companyName5, '(était:', fsStatut || 'vide', ')');
                 }
                 return firestoreUpdate(fsDoc.doc.id, fsUpdate).then(function(){ return '__updated__'; });
               }
@@ -2181,8 +2182,10 @@ setTimeout(checkEkwateurPreVisitesExpirees, 60000);
 // RÉCUPÉRATION AU DÉMARRAGE — devisUrl manquants sur dossiers récents
 // Compense les pertes de webhooks pendant les redémarrages Render
 // ============================================================
-function recoverMissingDevisUrl() {
-  console.log('Récupération devisUrl manquants...');
+function recoverMissingDevisUrl(attempt) {
+  attempt = attempt || 1;
+  if (attempt > 4) { console.log('recoverMissingDevisUrl: abandon après 4 tentatives'); return; }
+  console.log('Récupération devisUrl manquants... (tentative ' + attempt + '/4)');
   // Récupérer les devis Axonaut récents (dernières 48h)
   var axOpts = {
     hostname: 'app.axonaut.com',
@@ -2229,10 +2232,10 @@ function recoverMissingDevisUrl() {
   });
   r.on('error', function(e){
     console.log('recoverMissingDevisUrl error:', e.message);
-    // Retry dans 3 minutes si erreur réseau
-    if (e.code === 'ENOTFOUND' || e.code === 'EAI_AGAIN') {
-      console.log('recoverMissingDevisUrl: retry dans 3min...');
-      setTimeout(recoverMissingDevisUrl, 3 * 60000);
+    if ((e.code === 'ENOTFOUND' || e.code === 'EAI_AGAIN') && attempt < 4) {
+      var delay = attempt * 3 * 60000; // 3min, 6min, 9min
+      console.log('recoverMissingDevisUrl: retry dans ' + (delay/60000) + 'min...');
+      setTimeout(function(){ recoverMissingDevisUrl(attempt + 1); }, delay);
     }
   });
   r.end();
