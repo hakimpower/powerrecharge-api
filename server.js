@@ -19,7 +19,7 @@ const GADS_DEVELOPER_TOKEN = process.env.GADS_DEVELOPER_TOKEN || 'Jqy9k5vhwfuh1t
 const GADS_CLIENT_ID       = process.env.GADS_CLIENT_ID       || '339872384438-dfl7hmifahvadeplmsqdgeahh4mmhvm2.apps.googleusercontent.com';
 const GADS_CLIENT_SECRET   = process.env.GADS_CLIENT_SECRET   || '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';
 const GADS_REFRESH_TOKEN   = process.env.GADS_REFRESH_TOKEN   || '';
-const GADS_CUSTOMER_ID     = process.env.GADS_CUSTOMER_ID     || '8548958815'; // compte client contact.powerrecharge@gmail.com
+const GADS_CUSTOMER_ID     = process.env.GADS_CUSTOMER_ID     || '1045381552'; // Manager PowerRecharge Manager
 const GADS_MCC_ID          = process.env.GADS_MCC_ID          || '1045381552'; // Manager PowerRecharge Manager
 
 // ============================================================
@@ -1034,6 +1034,58 @@ var server = http.createServer(function(req, res) {
           }
           res.writeHead(200); res.end(JSON.stringify({success: true, signed: isSigned}));
         });
+      }
+
+      // event.created / event.updated — devis envoyé par email (Axonaut)
+      if (topic === 'event.created' || topic === 'event.updated') {
+        var evCompanyId = data.company_id ? String(data.company_id) : '';
+        var evTitle = data.title || '';
+        var evContent = data.content || '';
+        // Extraire le montant depuis le contenu HTML du mail (ex: "1 255,45 &euro;")
+        var evMontant = 0;
+        var montantMatch = evContent.match(/(\d[\d\s]*[,.]?\d*)\s*(?:&euro;|€)/);
+        if (montantMatch) {
+          evMontant = parseFloat(montantMatch[1].replace(/\s/g,'').replace(',','.')) || 0;
+        }
+        // Extraire le numéro de devis (ex: "Devis N°935")
+        var evRef = '';
+        var refMatch = evTitle.match(/[Nn]°\s*(\d+)/);
+        if (refMatch) evRef = '#' + refMatch[1];
+
+        if (!evCompanyId) {
+          console.log('event.created: pas de company_id, ignoré');
+          res.writeHead(200); res.end(JSON.stringify({success: true, message: 'event sans company_id'}));
+          return;
+        }
+        console.log('event.created/updated: company_id', evCompanyId, '| montant:', evMontant, '| ref:', evRef);
+
+        // Chercher le dossier Firestore par axonautId
+        firestoreQuery('axonautId', evCompanyId).then(function(fsDoc) {
+          if (!fsDoc) {
+            console.log('event.created: dossier Firestore introuvable pour company_id', evCompanyId);
+            res.writeHead(200); res.end(JSON.stringify({success: true, message: 'dossier introuvable'}));
+            return;
+          }
+          var fsData = fsDoc.data || {};
+          var fsStatut = fsData.statut && fsData.statut.stringValue ? fsData.statut.stringValue : (fsData.statut || '');
+          var statutsAvances = ['devis_envoye','new','devis_signe','affected','accepted','rdv','progress','done','sav','cloture'];
+          var fsUpdate = { updatedAt: new Date().toISOString() };
+          if (evMontant > 0) fsUpdate.montant = evMontant;
+          if (evRef) fsUpdate.ref = evRef;
+          // Passer en devis_envoye si pas encore à ce stade
+          if (statutsAvances.indexOf(fsStatut) === -1) {
+            fsUpdate.statut = 'devis_envoye';
+            console.log('event.created: statut mis à jour → devis_envoye pour company_id', evCompanyId);
+          }
+          return firestoreUpdate(fsDoc.id, fsUpdate).then(function() {
+            console.log('event.created: Firestore mis à jour', fsDoc.id, JSON.stringify(fsUpdate));
+            res.writeHead(200); res.end(JSON.stringify({success: true, action: 'updated'}));
+          });
+        }).catch(function(e) {
+          console.error('event.created Firestore error:', e.message);
+          res.writeHead(200); res.end(JSON.stringify({success: false, error: e.message}));
+        });
+        return;
       }
 
       // Topic ignore
