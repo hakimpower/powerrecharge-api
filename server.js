@@ -748,6 +748,14 @@ var server = http.createServer(function(req, res) {
               if (update2.ville)   fsUpdate.ville   = update2.ville;
               if (update2.cp)      { fsUpdate.cp = update2.cp; fsUpdate.dept = update2.dept; }
               if (!fsDoc.doc.data || !fsDoc.doc.data.axonautId) fsUpdate.axonautId = String(data.id);
+              // Ne jamais écraser une source facebook/google
+              var existingSource = fsDoc.doc.data && fsDoc.doc.data.source
+                ? (fsDoc.doc.data.source.stringValue || fsDoc.doc.data.source || '')
+                : '';
+              var sourcesProtegees = ['facebook','Facebook Lead Ads','facebook_lead','google','google_ads'];
+              if (sourcesProtegees.indexOf(existingSource) === -1 && update2.source) {
+                fsUpdate.source = update2.source;
+              }
               console.log('Company update Firestore:', fsDoc.doc.id, fsUpdate.client);
               return firestoreUpdate(fsDoc.doc.id, fsUpdate);
             });
@@ -1212,7 +1220,13 @@ var server = http.createServer(function(req, res) {
           }
           // Mettre a jour avec les nouvelles infos (selective)
           var update = {updatedAt: new Date().toISOString()};
-          var fields = ['client','tel','email','adresse','ville','cp','dept','borne','axonautId','type_logement','montant','commentaire','devisUrl','source'];
+          var fields = ['client','tel','email','adresse','ville','cp','dept','borne','axonautId','type_logement','montant','commentaire','devisUrl'];
+          // Ne jamais écraser une source facebook/google
+          var existingSourceF = fsDoc.data && fsDoc.data.source
+            ? (fsDoc.data.source.stringValue || fsDoc.data.source || '')
+            : '';
+          var sourcesProtF = ['facebook','Facebook Lead Ads','facebook_lead','google','google_ads'];
+          if (sourcesProtF.indexOf(existingSourceF) === -1) fields.push('source');
           fields.forEach(function(f) {
             if (dossier[f] && dossier[f] !== '' && dossier[f] !== '0') update[f] = dossier[f];
           });
