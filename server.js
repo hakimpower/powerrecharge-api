@@ -1070,8 +1070,34 @@ var server = http.createServer(function(req, res) {
         // Chercher le dossier Firestore par axonautId
         firestoreQuery('axonautId', evCompanyId).then(function(fsDoc) {
           if (!fsDoc) {
-            console.log('event.created: dossier Firestore introuvable pour company_id', evCompanyId);
-            res.writeHead(200); res.end(JSON.stringify({success: true, message: 'dossier introuvable'}));
+            // Dossier introuvable — créer avec statut devis_envoye
+            console.log('event.created: dossier introuvable, création pour company_id', evCompanyId);
+            var newDossier = {
+              axonautId:    evCompanyId,
+              client:       '',
+              statut:       'devis_envoye',
+              source:       'axonaut',
+              montant:      evMontant || 0,
+              ref:          evRef || '',
+              tel: '', email: '', adresse: '', ville: '', cp: '', dept: '',
+              borne: '', installateur: null, rdv: null, notes: '', imported: false,
+              createdAt:    new Date().toISOString(),
+              updatedAt:    new Date().toISOString()
+            };
+            // Récupérer les infos Axonaut
+            getAxonautCompanyInfo(evCompanyId).then(function(info) {
+              if (info) {
+                if (info.tel)     newDossier.tel     = info.tel;
+                if (info.email)   newDossier.email   = info.email;
+                if (info.adresse) newDossier.adresse = info.adresse;
+                if (info.ville)   newDossier.ville   = info.ville;
+                if (info.cp)      { newDossier.cp = info.cp; newDossier.dept = String(info.cp).slice(0,2); }
+              }
+              return firestoreCreate(newDossier);
+            }).catch(function() {
+              return firestoreCreate(newDossier);
+            });
+            res.writeHead(200); res.end(JSON.stringify({success: true, action: 'created'}));
             return;
           }
           var fsData = fsDoc.data || {};
@@ -1080,8 +1106,8 @@ var server = http.createServer(function(req, res) {
           var fsUpdate = { updatedAt: new Date().toISOString() };
           if (evMontant > 0) fsUpdate.montant = evMontant;
           if (evRef) fsUpdate.ref = evRef;
-          // Passer en devis_envoye si pas encore à ce stade
-          if (statutsAvances.indexOf(fsStatut) === -1) {
+          // Passer en devis_envoye si statut vide ou pas encore avancé
+          if (!fsStatut || statutsAvances.indexOf(fsStatut) === -1) {
             fsUpdate.statut = 'devis_envoye';
             console.log('event.created: statut mis à jour → devis_envoye pour company_id', evCompanyId);
           }
