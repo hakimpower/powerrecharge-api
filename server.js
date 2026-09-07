@@ -669,13 +669,8 @@ var server = http.createServer(function(req, res) {
       if (topic === 'company.created') {
         var employees = data.employees || [];
         var contact   = employees.length > 0 ? employees[0] : {};
-        if (employees.length === 0) {
-          console.log('company.created sans employees - on attend company.updated');
-          res.writeHead(200); res.end(JSON.stringify({success: true, message: 'Attente company.updated'}));
-          return;
-        }
         var prospect = {
-          client:    data.name || '',
+          client:    data.name || ('PROSPECT-' + data.id),
           tel:       contact.cellphone_number || contact.phone_number || contact.mobile || '',
           email:     contact.email || '',
           adresse:   data.address_street || '',
@@ -684,16 +679,35 @@ var server = http.createServer(function(req, res) {
           dept:      data.address_zip_code ? String(data.address_zip_code).slice(0,2) : '',
           axonautId: String(data.id),
           statut:    'prospect',
+          source:    'axonaut',
           borne: '', montant: 0, ref: 'PROSPECT-' + data.id,
           installateur: null, rdv: null, notes: '', imported: false,
           createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
         };
-        console.log('Prospect:', prospect.client, prospect.tel, prospect.email);
+        if (employees.length === 0) {
+          console.log('company.created sans employees — création directe en attendant company.updated:', prospect.client);
+        } else {
+          console.log('company.created:', prospect.client, prospect.tel, prospect.email);
+        }
         return findDossierByAxonautId(data.id).then(function(existing) {
           if (existing) {
+            console.log('company.created: dossier RDB déjà existant, mise à jour');
             return firebasePatch('/commandes_axonaut/' + existing.key + '.json', selectiveUpdate(existing.data, prospect));
           }
-          return firebasePost('/commandes_axonaut.json', prospect);
+          // Vérifier aussi dans Firestore
+          return firestoreQuery('axonautId', String(data.id)).then(function(fsExisting) {
+            if (fsExisting) {
+              console.log('company.created: dossier Firestore déjà existant', fsExisting.id);
+              return; // Déjà là, ne pas dupliquer
+            }
+            // Créer dans Firestore ET dans RDB
+            return firestoreCreate(prospect).then(function(fsResult) {
+              var newDocId = fsResult && fsResult.name ? fsResult.name.split('/').pop() : null;
+              return firebasePost('/commandes_axonaut.json', Object.assign({}, prospect, {firestoreId: newDocId}));
+            });
+          }).catch(function() {
+            return firebasePost('/commandes_axonaut.json', prospect);
+          });
         }).then(function() {
           res.writeHead(200); res.end(JSON.stringify({success: true}));
         });
@@ -1240,6 +1254,8 @@ var server = http.createServer(function(req, res) {
             ['client','tel','email','adresse','ville','cp','dept','borne','axonautId','type_logement','montant','commentaire','devisUrl','source'].forEach(function(f){
               if (dossier[f] && dossier[f] !== '' && dossier[f] !== '0') fsUpd[f] = dossier[f];
             });
+            // Ajouter statut prospect si le dossier n'en a pas
+            if (!existing.data || !existing.data.statut) fsUpd.statut = 'prospect';
             firestoreUpdate(fsId, fsUpd).catch(function(){});
             res.writeHead(200); res.end(JSON.stringify({success: true, action: 'updated_firestore'}));
             return;
@@ -1264,6 +1280,8 @@ var server = http.createServer(function(req, res) {
             ['type_logement','borne','montant','commentaire','adresse','ville','cp','dept','tel','email','client','devisUrl','source'].forEach(function(f){
               if (update[f] !== undefined && update[f] !== '' && update[f] !== 0) fsUpdate[f] = update[f];
             });
+            // Forcer statut prospect si le dossier Firestore n'en a pas
+            fsUpdate._setStatutIfEmpty = 'prospect';
             var axId = dossier.axonautId || (existing.data && existing.data.axonautId) || '';
             var refVal = dossier.ref || (existing.data && existing.data.ref) || '';
             var findFs = axId ? firestoreQuery('axonautId', String(axId)) : Promise.resolve(null);
@@ -1272,13 +1290,20 @@ var server = http.createServer(function(req, res) {
               return fsDoc;
             }).then(function(fsDoc){
               var isDeleted = fsDoc && fsDoc.data && fsDoc.data.deleted && (fsDoc.data.deleted.booleanValue === true);
+              // Appliquer statut prospect si le dossier n'en a pas
+              var actualFsUpdate = Object.assign({}, fsUpdate);
+              delete actualFsUpdate._setStatutIfEmpty;
               if (fsDoc && !isDeleted) {
-                firestoreUpdate(fsDoc.id, fsUpdate);
+                var existSt = fsDoc.data && fsDoc.data.statut
+                  ? (fsDoc.data.statut.stringValue || fsDoc.data.statut || '')
+                  : '';
+                if (!existSt) actualFsUpdate.statut = 'prospect';
+                firestoreUpdate(fsDoc.id, actualFsUpdate);
               } else if (fsDoc && isDeleted) {
                 console.log('Dossier Firestore supprimé (deleted:true) pour axonautId:', axId, '→ création nouveau dossier');
-                firestoreCreate(Object.assign({}, dossier, fsUpdate));
+                firestoreCreate(Object.assign({}, dossier, actualFsUpdate));
               } else if (!fsDoc) {
-                firestoreCreate(Object.assign({}, dossier, fsUpdate));
+                firestoreCreate(Object.assign({}, dossier, actualFsUpdate));
               }
             }).catch(function(e){ console.warn('Firestore sync error:', e.message); });
           }).catch(function(e){ res.writeHead(200); res.end(JSON.stringify({error: e.message})); });
