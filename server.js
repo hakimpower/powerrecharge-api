@@ -2398,7 +2398,7 @@ function recoverMissingDevisUrl(attempt) {
   r.end();
 }
 // Lancer 5 minutes après le démarrage pour laisser le réseau se stabiliser
-setTimeout(recoverMissingDevisUrl, 5 * 60000);
+setTimeout(recoverMissingDevisUrl, 15 * 60000); // Attendre 15min après démarrage pour laisser DNS se stabiliser
 // Relancer toutes les 6 heures
 setInterval(recoverMissingDevisUrl, 6 * 60 * 60000);
 
