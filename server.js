@@ -1615,6 +1615,96 @@ var server = http.createServer(function(req, res) {
     return;
   }
 
+  // ═══════════════════════════════════════
+  // ROUTE: /whatsapp-webhook
+  // Réception des messages WhatsApp entrants
+  // ═══════════════════════════════════════
+  if (req.url.startsWith('/whatsapp-webhook')) {
+
+    // Vérification du webhook par Meta (GET)
+    if (req.method === 'GET') {
+      var urlParams = new URL('http://localhost' + req.url).searchParams;
+      var mode      = urlParams.get('hub.mode');
+      var token     = urlParams.get('hub.verify_token');
+      var challenge = urlParams.get('hub.challenge');
+      var VERIFY_TOKEN = process.env.WA_VERIFY_TOKEN || 'powerrecharge_whatsapp_2026';
+      if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+        console.log('WhatsApp webhook vérifié ✓');
+        res.writeHead(200); res.end(challenge);
+      } else {
+        console.log('WhatsApp webhook vérification échouée — token invalide');
+        res.writeHead(403); res.end('Forbidden');
+      }
+      return;
+    }
+
+    // Réception d'un message entrant (POST)
+    if (req.method === 'POST') {
+      parseBody(req).then(function(body) {
+        try {
+          var entry    = body.entry && body.entry[0];
+          var changes  = entry && entry.changes && entry.changes[0];
+          var value    = changes && changes.value;
+          var messages = value && value.messages;
+
+          if (!messages || !messages.length) {
+            res.writeHead(200); res.end('OK');
+            return;
+          }
+
+          var msg   = messages[0];
+          var from  = msg.from; // numéro expéditeur format international ex: 33764442680
+          var type  = msg.type; // text, audio, image...
+
+          console.log('WhatsApp message reçu de:', from, '| type:', type);
+
+          // Normaliser le numéro : 33764442680 → 0764442680 (format français)
+          var telNorm = from;
+          if (telNorm.startsWith('33')) telNorm = '0' + telNorm.slice(2);
+          // Supprimer espaces et tirets
+          telNorm = telNorm.replace(/[\s\-\.]/g, '');
+
+          // Chercher le dossier Firestore par téléphone
+          firestoreQuery('tel', telNorm).then(function(fsDoc) {
+            if (!fsDoc) {
+              // Essayer avec le format international
+              return firestoreQuery('tel', from);
+            }
+            return fsDoc;
+          }).then(function(fsDoc) {
+            if (!fsDoc) {
+              // Essayer avec +33
+              return firestoreQuery('tel', '+33' + telNorm.slice(1));
+            }
+            return fsDoc;
+          }).then(function(fsDoc) {
+            if (!fsDoc) {
+              console.log('WhatsApp: aucun dossier trouvé pour', telNorm);
+              return;
+            }
+            var isDeleted = fsDoc.data && fsDoc.data.deleted && fsDoc.data.deleted.booleanValue === true;
+            if (isDeleted) return;
+            // Marquer whatsapp: true dans Firestore
+            return firestoreUpdate(fsDoc.id, {
+              whatsapp: true,
+              whatsappLastMsg: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            }).then(function() {
+              console.log('WhatsApp: dossier mis à jour →', fsDoc.id, '| client:', fsDoc.data && fsDoc.data.client ? (fsDoc.data.client.stringValue || fsDoc.data.client) : '');
+            });
+          }).catch(function(e) {
+            console.error('WhatsApp Firestore error:', e.message);
+          });
+
+        } catch(e) {
+          console.error('WhatsApp parse error:', e.message);
+        }
+        res.writeHead(200); res.end('OK');
+      });
+      return;
+    }
+  }
+
   if (req.url === '/lead-webhook' && req.method === 'POST') {
     parseBody(req).then(function(body) {
       console.log('Lead Facebook recu:', JSON.stringify(body).slice(0, 400));
