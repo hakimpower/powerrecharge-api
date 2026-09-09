@@ -1591,6 +1591,58 @@ var server = http.createServer(function(req, res) {
     return;
   }
 
+  // ═══════════════════════════════════════
+  // ROUTE: /whatsapp-webhook
+  // ═══════════════════════════════════════
+  if (req.url.startsWith('/whatsapp-webhook')) {
+    if (req.method === 'GET') {
+      var urlParams = new URL('http://localhost' + req.url).searchParams;
+      var mode      = urlParams.get('hub.mode');
+      var token     = urlParams.get('hub.verify_token');
+      var challenge = urlParams.get('hub.challenge');
+      var VERIFY_TOKEN = process.env.WA_VERIFY_TOKEN || 'powerrecharge_whatsapp_2026';
+      if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+        console.log('WhatsApp webhook vérifié ✓');
+        res.writeHead(200); res.end(challenge);
+      } else {
+        res.writeHead(403); res.end('Forbidden');
+      }
+      return;
+    }
+    if (req.method === 'POST') {
+      parseBody(req).then(function(body) {
+        try {
+          var entry    = body.entry && body.entry[0];
+          var changes  = entry && entry.changes && entry.changes[0];
+          var value    = changes && changes.value;
+          var messages = value && value.messages;
+          if (!messages || !messages.length) { res.writeHead(200); res.end('OK'); return; }
+          var msg  = messages[0];
+          var from = msg.from;
+          console.log('WhatsApp message reçu de:', from);
+          var telNorm = from;
+          if (telNorm.startsWith('33')) telNorm = '0' + telNorm.slice(2);
+          telNorm = telNorm.replace(/[\s\-\.]/g, '');
+          var tryFind = [telNorm, from, '+33' + telNorm.slice(1)];
+          var p = Promise.resolve(null);
+          tryFind.forEach(function(tel) {
+            p = p.then(function(found) { return found || firestoreQuery('tel', tel); });
+          });
+          p.then(function(fsDoc) {
+            if (!fsDoc) { console.log('WhatsApp: aucun dossier pour', telNorm); return; }
+            var isDeleted = fsDoc.data && fsDoc.data.deleted && fsDoc.data.deleted.booleanValue === true;
+            if (isDeleted) return;
+            return firestoreUpdate(fsDoc.id, { whatsapp: true, whatsappLastMsg: new Date().toISOString(), updatedAt: new Date().toISOString() }).then(function() {
+              console.log('WhatsApp: dossier mis à jour →', fsDoc.id);
+            });
+          }).catch(function(e) { console.error('WhatsApp error:', e.message); });
+        } catch(e) { console.error('WhatsApp parse error:', e.message); }
+        res.writeHead(200); res.end('OK');
+      });
+      return;
+    }
+  }
+
   if (req.url === '/lead-webhook' && req.method === 'POST') {
     parseBody(req).then(function(body) {
       console.log('Lead Facebook recu:', JSON.stringify(body).slice(0, 400));
