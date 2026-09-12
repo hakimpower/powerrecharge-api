@@ -1647,7 +1647,7 @@ var server = http.createServer(function(req, res) {
             p = p.then(function(found) { return found || firestoreQuery('tel', tel); });
           });
           p.then(function(fsDoc) {
-            if (!fsDoc) { console.log('WhatsApp: aucun dossier pour', telNorm); return; }
+            if (!fsDoc) { console.log('WhatsApp: aucun dossier pour', telRaw, '| variantes:', variants.join(', ')); return; }
             var isDeleted = fsDoc.data && fsDoc.data.deleted && fsDoc.data.deleted.booleanValue === true;
             if (isDeleted) return;
             return firestoreUpdate(fsDoc.id, { whatsapp: true, whatsappLastMsg: new Date().toISOString(), updatedAt: new Date().toISOString() }).then(function() {
