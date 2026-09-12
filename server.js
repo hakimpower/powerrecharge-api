@@ -876,7 +876,9 @@ var server = http.createServer(function(req, res) {
         if (!borneTxt5 || borneTxt5.length < 2) borneTxt5 = '';
         var montant5 = Number(data.pre_tax_amount || data.total_amount || 0);
         var ref5 = 'AX-' + devisNum5;
-        console.log('Quotation created:', companyName5, borneTxt5, montant5);
+        // Récupérer l'URL du devis depuis le webhook
+        var devisUrl5 = data.customer_portal_url || data.customerPortalUrl || data.portal_url || data.devis_url || '';
+        console.log('Quotation created:', companyName5, borneTxt5, montant5, devisUrl5 ? '| URL: ' + devisUrl5 : '');
 
         // Date + heure d'arrivée du devis dans l'application
         var nowArr5 = new Date();
@@ -892,6 +894,7 @@ var server = http.createServer(function(req, res) {
           };
           if (borneTxt5) update5.borne = borneTxt5;
           if (montant5) update5.montant = montant5;
+          if (devisUrl5) update5.devisUrl = devisUrl5;
           update5.datesign = devisEnvoyeLe;
           if (existing) {
             return firebasePatch('/commandes_axonaut/' + existing.key + '.json', update5);
@@ -916,6 +919,7 @@ var server = http.createServer(function(req, res) {
                 var fsUpdate = {ref: ref5, axonautId: String(companyId5), updatedAt: new Date().toISOString()};
                 if (montant5) fsUpdate.montant = montant5;
                 if (borneTxt5) fsUpdate.borne = borneTxt5;
+                if (devisUrl5) fsUpdate.devisUrl = devisUrl5;
                 // Lire le statut (format Firestore REST ou objet direct)
                 var fsStatut = fsDoc.doc && fsDoc.doc.data && fsDoc.doc.data.statut
                   ? (fsDoc.doc.data.statut.stringValue || fsDoc.doc.data.statut || '')
