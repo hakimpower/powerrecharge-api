@@ -1622,14 +1622,28 @@ var server = http.createServer(function(req, res) {
           var messages = value && value.messages;
           if (!messages || !messages.length) { res.writeHead(200); res.end('OK'); return; }
           var msg  = messages[0];
-          var from = msg.from;
+          var from = msg.from; // ex: 33764442680
           console.log('WhatsApp message reçu de:', from);
-          var telNorm = from;
-          if (telNorm.startsWith('33')) telNorm = '0' + telNorm.slice(2);
-          telNorm = telNorm.replace(/[\s\-\.]/g, '');
-          var tryFind = [telNorm, from, '+33' + telNorm.slice(1)];
+
+          // Générer toutes les variantes du numéro pour la recherche
+          var telRaw = String(from).replace(/[\s\-\.]/g, '');
+          var variants = [];
+          // Format reçu : 33XXXXXXXXX
+          variants.push(telRaw);
+          // → 0XXXXXXXXX
+          if (telRaw.startsWith('33')) variants.push('0' + telRaw.slice(2));
+          // → +33XXXXXXXXX
+          variants.push('+' + telRaw);
+          if (telRaw.startsWith('33')) variants.push('+33' + telRaw.slice(2));
+          // → XXXXXXXXX (sans 0 ni indicatif)
+          if (telRaw.startsWith('33')) variants.push(telRaw.slice(2));
+          if (telRaw.startsWith('0')) variants.push(telRaw.slice(1));
+          // Dédoublonner
+          variants = variants.filter(function(v, i, a){ return a.indexOf(v) === i; });
+          console.log('WhatsApp: variantes recherchées:', variants.join(', '));
+
           var p = Promise.resolve(null);
-          tryFind.forEach(function(tel) {
+          variants.forEach(function(tel) {
             p = p.then(function(found) { return found || firestoreQuery('tel', tel); });
           });
           p.then(function(fsDoc) {
