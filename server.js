@@ -17,7 +17,7 @@ const FB_TOKEN      = process.env.FB_TOKEN || 'EAAkwkK5SXKABSKwAy3uSRdbDpuJ43lCl
 // ============================================================
 const GADS_DEVELOPER_TOKEN = process.env.GADS_DEVELOPER_TOKEN || 'Jqy9k5vhwfuh1tgrCySsLw';
 const GADS_CLIENT_ID       = process.env.GADS_CLIENT_ID       || '339872384438-dfl7hmifahvadeplmsqdgeahh4mmhvm2.apps.googleusercontent.com';
-const GADS_CLIENT_SECRET   = process.env.GADS_CLIENT_SECRET   || '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';
+const GADS_CLIENT_SECRET   = process.env.GADS_CLIENT_SECRET   || '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';
 const GADS_REFRESH_TOKEN   = process.env.GADS_REFRESH_TOKEN   || '';
 const GADS_CUSTOMER_ID     = process.env.GADS_CUSTOMER_ID     || '8548958815'; // Compte publicitaire Power Recharge
 const GADS_MCC_ID          = process.env.GADS_MCC_ID          || '1045381552'; // Manager PowerRecharge Manager
