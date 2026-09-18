@@ -318,6 +318,44 @@ function firestoreUpdateIn(collection, docId, fields) {
   });
 }
 
+function firestoreGetIn(collection, docId) {
+  return new Promise(function(resolve) {
+    var options = {
+      hostname: FIRESTORE_URL,
+      path: '/v1/projects/' + FIREBASE_PROJECT + '/databases/(default)/documents/' + collection + '/' + docId + '?key=' + FIREBASE_API_KEY,
+      method: 'GET'
+    };
+    var req = https.request(options, function(res) {
+      var d = '';
+      res.on('data', function(c){ d += c; });
+      res.on('end', function(){
+        if (res.statusCode === 404) { resolve(null); return; }
+        try {
+          var parsed = JSON.parse(d);
+          resolve({id: docId, data: parsed.fields || {}});
+        } catch(e) { resolve(null); }
+      });
+    });
+    req.on('error', function(){ resolve(null); });
+    req.end();
+  });
+}
+
+// Récupérer un collaborateur depuis son token de session
+function collabFromToken(token) {
+  if (!token || !token.startsWith('collab_')) return Promise.resolve(null);
+  var parts = token.split('_');
+  if (parts.length < 3) return Promise.resolve(null);
+  var collabId = parts[1];
+  return firestoreGetIn('collaborateurs', collabId).then(function(doc) {
+    if (!doc || !doc.data) return null;
+    var storedToken = doc.data.sessionToken && doc.data.sessionToken.stringValue
+      ? doc.data.sessionToken.stringValue : (doc.data.sessionToken || '');
+    if (storedToken !== token) return null;
+    return {id: collabId, data: doc.data};
+  }).catch(function() { return null; });
+}
+
 function firestoreListIn(collection) {
   return new Promise(function(resolve) {
     var options = {
@@ -2342,6 +2380,178 @@ var server = http.createServer(function(req, res) {
       sendZapierNotif(hookUrl, {client: body.client || '', email: body.email || '', tel: body.tel || ''});
       res.writeHead(200); res.end(JSON.stringify({success: true}));
     }).catch(function(e){ res.writeHead(200); res.end(JSON.stringify({error: e.message})); });
+    return;
+  }
+
+  // ═══════════════════════════════════════
+  // ROUTES: ESPACE COLLABORATEUR
+  // ═══════════════════════════════════════
+
+  // POST /collab-login — authentification collaborateur
+  if (req.url === '/collab-login' && req.method === 'POST') {
+    parseBody(req).then(function(body) {
+      var email = (body.email || '').toLowerCase().trim();
+      var mdp   = body.mdp || '';
+      if (!email || !mdp) {
+        res.writeHead(400); res.end(JSON.stringify({success: false, error: 'Email et mot de passe requis'}));
+        return;
+      }
+      // Chercher le collaborateur par email dans Firestore
+      firestoreQueryIn('collaborateurs', 'email', email).then(function(docs) {
+        if (!docs || !docs.length) {
+          res.writeHead(401); res.end(JSON.stringify({success: false, error: 'Identifiants incorrects'}));
+          return;
+        }
+        var collab = docs[0];
+        var collabData = collab.data || {};
+        var storedMdp = collabData.mdp && collabData.mdp.stringValue ? collabData.mdp.stringValue : (collabData.mdp || '');
+        var statut = collabData.statut && collabData.statut.stringValue ? collabData.statut.stringValue : (collabData.statut || 'actif');
+        if (storedMdp !== mdp) {
+          res.writeHead(401); res.end(JSON.stringify({success: false, error: 'Identifiants incorrects'}));
+          return;
+        }
+        if (statut !== 'actif') {
+          res.writeHead(403); res.end(JSON.stringify({success: false, error: 'Compte désactivé'}));
+          return;
+        }
+        // Générer un token de session simple
+        var token = 'collab_' + collab.id + '_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+        // Sauvegarder le token dans Firestore
+        firestoreUpdateIn('collaborateurs', collab.id, {
+          sessionToken: token,
+          lastLogin: new Date().toISOString()
+        }).then(function() {
+          var nom = collabData.nom && collabData.nom.stringValue ? collabData.nom.stringValue : (collabData.nom || '');
+          var societe = collabData.societe && collabData.societe.stringValue ? collabData.societe.stringValue : (collabData.societe || '');
+          res.writeHead(200); res.end(JSON.stringify({
+            success: true,
+            token: token,
+            collabId: collab.id,
+            nom: nom,
+            societe: societe,
+            email: email
+          }));
+        });
+      }).catch(function(e) {
+        res.writeHead(500); res.end(JSON.stringify({success: false, error: e.message}));
+      });
+    });
+    return;
+  }
+
+  // POST /collab-change-password — changement de mot de passe
+  if (req.url === '/collab-change-password' && req.method === 'POST') {
+    parseBody(req).then(function(body) {
+      var token  = body.token || '';
+      var oldMdp = body.oldMdp || '';
+      var newMdp = body.newMdp || '';
+      if (!token || !oldMdp || !newMdp || newMdp.length < 6) {
+        res.writeHead(400); res.end(JSON.stringify({success: false, error: 'Données invalides'}));
+        return;
+      }
+      collabFromToken(token).then(function(collab) {
+        if (!collab) { res.writeHead(401); res.end(JSON.stringify({success: false, error: 'Session invalide'})); return; }
+        var storedMdp = collab.data.mdp && collab.data.mdp.stringValue ? collab.data.mdp.stringValue : (collab.data.mdp || '');
+        if (storedMdp !== oldMdp) { res.writeHead(401); res.end(JSON.stringify({success: false, error: 'Ancien mot de passe incorrect'})); return; }
+        return firestoreUpdateIn('collaborateurs', collab.id, {mdp: newMdp, updatedAt: new Date().toISOString()}).then(function() {
+          res.writeHead(200); res.end(JSON.stringify({success: true}));
+        });
+      }).catch(function(e) { res.writeHead(500); res.end(JSON.stringify({success: false, error: e.message})); });
+    });
+    return;
+  }
+
+  // GET /collab-dashboard — données tableau de bord collaborateur
+  if (req.url.startsWith('/collab-dashboard') && req.method === 'GET') {
+    var token = new URL('http://localhost' + req.url).searchParams.get('token');
+    collabFromToken(token).then(function(collab) {
+      if (!collab) { res.writeHead(401); res.end(JSON.stringify({success: false, error: 'Session invalide'})); return; }
+      var collabId = collab.id;
+      // Récupérer les demandes et tickets SAV
+      Promise.all([
+        firestoreQueryIn('demandes', 'collaborateurId', collabId),
+        firestoreQueryIn('tickets_sav', 'collaborateurId', collabId)
+      ]).then(function(results) {
+        var demandes = (results[0] || []).map(function(d) { return Object.assign({id: d.id}, d.data); });
+        var tickets  = (results[1] || []).map(function(t) { return Object.assign({id: t.id}, t.data); });
+        // Extraire les valeurs stringValue
+        demandes = demandes.map(function(d) {
+          var out = {id: d.id};
+          Object.keys(d).forEach(function(k) { out[k] = d[k] && d[k].stringValue !== undefined ? d[k].stringValue : d[k]; });
+          return out;
+        });
+        tickets = tickets.map(function(t) {
+          var out = {id: t.id};
+          Object.keys(t).forEach(function(k) { out[k] = t[k] && t[k].stringValue !== undefined ? t[k].stringValue : t[k]; });
+          return out;
+        });
+        res.writeHead(200); res.end(JSON.stringify({success: true, demandes: demandes, tickets: tickets}));
+      });
+    }).catch(function(e) { res.writeHead(500); res.end(JSON.stringify({success: false, error: e.message})); });
+    return;
+  }
+
+  // POST /collab-demande — créer une demande d'installation
+  if (req.url === '/collab-demande' && req.method === 'POST') {
+    parseBody(req).then(function(body) {
+      var token = body.token || '';
+      collabFromToken(token).then(function(collab) {
+        if (!collab) { res.writeHead(401); res.end(JSON.stringify({success: false, error: 'Session invalide'})); return; }
+        var demande = {
+          collaborateurId: collab.id,
+          societe:         collab.data.societe && collab.data.societe.stringValue ? collab.data.societe.stringValue : (collab.data.societe || ''),
+          client:          body.client || '',
+          adresse:         body.adresse || '',
+          cp:              body.cp || '',
+          ville:           body.ville || '',
+          type_borne:      body.type_borne || '',
+          nb_prises:       body.nb_prises || '1',
+          notes:           body.notes || '',
+          statut:          'en_attente',
+          createdAt:       new Date().toISOString(),
+          updatedAt:       new Date().toISOString()
+        };
+        return firestoreCreateIn('demandes', demande).then(function(result) {
+          res.writeHead(200); res.end(JSON.stringify({success: true, id: result && result.name ? result.name.split('/').pop() : null}));
+        });
+      }).catch(function(e) { res.writeHead(500); res.end(JSON.stringify({success: false, error: e.message})); });
+    });
+    return;
+  }
+
+  // POST /collab-ticket — créer un ticket SAV
+  if (req.url === '/collab-ticket' && req.method === 'POST') {
+    parseBody(req).then(function(body) {
+      var token = body.token || '';
+      collabFromToken(token).then(function(collab) {
+        if (!collab) { res.writeHead(401); res.end(JSON.stringify({success: false, error: 'Session invalide'})); return; }
+        var ticket = {
+          collaborateurId: collab.id,
+          societe:         collab.data.societe && collab.data.societe.stringValue ? collab.data.societe.stringValue : (collab.data.societe || ''),
+          demandeId:       body.demandeId || '',
+          sujet:           body.sujet || '',
+          description:     body.description || '',
+          statut:          'ouvert',
+          createdAt:       new Date().toISOString(),
+          updatedAt:       new Date().toISOString()
+        };
+        return firestoreCreateIn('tickets_sav', ticket).then(function(result) {
+          res.writeHead(200); res.end(JSON.stringify({success: true, id: result && result.name ? result.name.split('/').pop() : null}));
+        });
+      }).catch(function(e) { res.writeHead(500); res.end(JSON.stringify({success: false, error: e.message})); });
+    });
+    return;
+  }
+
+  // GET /collab-verify — vérifier si le token de session est valide
+  if (req.url.startsWith('/collab-verify') && req.method === 'GET') {
+    var token = new URL('http://localhost' + req.url).searchParams.get('token');
+    collabFromToken(token).then(function(collab) {
+      if (!collab) { res.writeHead(401); res.end(JSON.stringify({success: false})); return; }
+      var nom = collab.data.nom && collab.data.nom.stringValue ? collab.data.nom.stringValue : (collab.data.nom || '');
+      var societe = collab.data.societe && collab.data.societe.stringValue ? collab.data.societe.stringValue : (collab.data.societe || '');
+      res.writeHead(200); res.end(JSON.stringify({success: true, collabId: collab.id, nom: nom, societe: societe}));
+    }).catch(function() { res.writeHead(401); res.end(JSON.stringify({success: false})); });
     return;
   }
 
