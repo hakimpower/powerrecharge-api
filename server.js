@@ -2397,15 +2397,16 @@ var server = http.createServer(function(req, res) {
         return;
       }
       // Chercher le collaborateur par email dans Firestore
-      firestoreQueryIn('collaborateurs', 'email', email).then(function(docs) {
-        if (!docs || !docs.length) {
+      firestoreQueryIn('collaborateurs', 'email', email).then(function(collab) {
+        if (!collab) {
+          console.log('collab-login: email non trouvé:', email);
           res.writeHead(401); res.end(JSON.stringify({success: false, error: 'Identifiants incorrects'}));
           return;
         }
-        var collab = docs[0];
         var collabData = collab.data || {};
         var storedMdp = collabData.mdp && collabData.mdp.stringValue ? collabData.mdp.stringValue : (collabData.mdp || '');
         var statut = collabData.statut && collabData.statut.stringValue ? collabData.statut.stringValue : (collabData.statut || 'actif');
+        console.log('collab-login: email trouvé', email, '| statut:', statut, '| mdp match:', storedMdp === mdp);
         if (storedMdp !== mdp) {
           res.writeHead(401); res.end(JSON.stringify({success: false, error: 'Identifiants incorrects'}));
           return;
@@ -2414,23 +2415,14 @@ var server = http.createServer(function(req, res) {
           res.writeHead(403); res.end(JSON.stringify({success: false, error: 'Compte désactivé'}));
           return;
         }
-        // Générer un token de session simple
         var token = 'collab_' + collab.id + '_' + Date.now() + '_' + Math.random().toString(36).slice(2);
-        // Sauvegarder le token dans Firestore
         firestoreUpdateIn('collaborateurs', collab.id, {
           sessionToken: token,
           lastLogin: new Date().toISOString()
         }).then(function() {
           var nom = collabData.nom && collabData.nom.stringValue ? collabData.nom.stringValue : (collabData.nom || '');
           var societe = collabData.societe && collabData.societe.stringValue ? collabData.societe.stringValue : (collabData.societe || '');
-          res.writeHead(200); res.end(JSON.stringify({
-            success: true,
-            token: token,
-            collabId: collab.id,
-            nom: nom,
-            societe: societe,
-            email: email
-          }));
+          res.writeHead(200); res.end(JSON.stringify({success: true, token: token, collabId: collab.id, nom: nom, societe: societe, email: email}));
         });
       }).catch(function(e) {
         res.writeHead(500); res.end(JSON.stringify({success: false, error: e.message}));
