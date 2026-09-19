@@ -239,6 +239,54 @@ function firestoreCreateIn(collection, data) {
   });
 }
 
+function firestoreQueryAllIn(collection, field, value) {
+  return new Promise(function(resolve) {
+    var body = JSON.stringify({
+      structuredQuery: {
+        from: [{collectionId: collection}],
+        where: {
+          fieldFilter: {
+            field: {fieldPath: field},
+            op: 'EQUAL',
+            value: {stringValue: String(value)}
+          }
+        }
+      }
+    });
+    var options = {
+      hostname: FIRESTORE_URL,
+      path: '/v1/projects/' + FIREBASE_PROJECT + '/databases/(default)/documents:runQuery?key=' + FIREBASE_API_KEY,
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body)}
+    };
+    var req = https.request(options, function(res) {
+      var d = '';
+      res.on('data', function(c){ d += c; });
+      res.on('end', function(){
+        try {
+          var results = JSON.parse(d);
+          var docs = results.filter(function(r){ return r.document; }).map(function(r) {
+            var docId = r.document.name.split('/').pop();
+            var out = {id: docId};
+            Object.keys(r.document.fields || {}).forEach(function(k) {
+              var v = r.document.fields[k];
+              out[k] = v.stringValue !== undefined ? v.stringValue
+                : v.integerValue !== undefined ? v.integerValue
+                : v.doubleValue !== undefined ? v.doubleValue
+                : v.booleanValue !== undefined ? v.booleanValue
+                : v.nullValue !== undefined ? null : v;
+            });
+            return out;
+          });
+          resolve(docs);
+        } catch(e) { console.error('firestoreQueryAllIn error:', e.message); resolve([]); }
+      });
+    });
+    req.on('error', function(e){ console.error('firestoreQueryAllIn req error:', e.message); resolve([]); });
+    req.end(body);
+  });
+}
+
 function firestoreQueryIn(collection, field, value) {
   return new Promise(function(resolve) {
     var body = JSON.stringify({
@@ -2461,22 +2509,12 @@ var server = http.createServer(function(req, res) {
       var collabId = collab.id;
       // Récupérer les demandes et tickets SAV
       Promise.all([
-        firestoreQueryIn('demandes', 'collaborateurId', collabId),
-        firestoreQueryIn('tickets_sav', 'collaborateurId', collabId)
+        firestoreQueryAllIn('demandes', 'collaborateurId', collabId),
+        firestoreQueryAllIn('tickets_sav', 'collaborateurId', collabId)
       ]).then(function(results) {
-        var demandes = (results[0] || []).map(function(d) { return Object.assign({id: d.id}, d.data); });
-        var tickets  = (results[1] || []).map(function(t) { return Object.assign({id: t.id}, t.data); });
-        // Extraire les valeurs stringValue
-        demandes = demandes.map(function(d) {
-          var out = {id: d.id};
-          Object.keys(d).forEach(function(k) { out[k] = d[k] && d[k].stringValue !== undefined ? d[k].stringValue : d[k]; });
-          return out;
-        });
-        tickets = tickets.map(function(t) {
-          var out = {id: t.id};
-          Object.keys(t).forEach(function(k) { out[k] = t[k] && t[k].stringValue !== undefined ? t[k].stringValue : t[k]; });
-          return out;
-        });
+        var demandes = results[0] || [];
+        var tickets  = results[1] || [];
+        console.log('collab-dashboard:', collabId, '| demandes:', demandes.length, '| tickets:', tickets.length);
         res.writeHead(200); res.end(JSON.stringify({success: true, demandes: demandes, tickets: tickets}));
       });
     }).catch(function(e) { res.writeHead(500); res.end(JSON.stringify({success: false, error: e.message})); });
