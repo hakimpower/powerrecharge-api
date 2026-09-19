@@ -2549,6 +2549,29 @@ var server = http.createServer(function(req, res) {
     return;
   }
 
+  // POST /collab-demande-cloture — clôturer une demande terminée
+  if (req.url === '/collab-demande-cloture' && req.method === 'POST') {
+    parseBody(req).then(function(body) {
+      var token     = body.token || '';
+      var demandeId = body.demandeId || '';
+      if (!demandeId) { res.writeHead(400); res.end(JSON.stringify({success: false, error: 'demandeId manquant'})); return; }
+      collabFromToken(token).then(function(collab) {
+        if (!collab) { res.writeHead(401); res.end(JSON.stringify({success: false, error: 'Session invalide'})); return; }
+        // Vérifier que la demande appartient bien à ce collaborateur
+        return firestoreGetIn('demandes', demandeId).then(function(doc) {
+          if (!doc) { res.writeHead(404); res.end(JSON.stringify({success: false, error: 'Demande introuvable'})); return; }
+          var collabId = doc.data.collaborateurId && doc.data.collaborateurId.stringValue ? doc.data.collaborateurId.stringValue : (doc.data.collaborateurId || '');
+          if (collabId !== collab.id) { res.writeHead(403); res.end(JSON.stringify({success: false, error: 'Non autorisé'})); return; }
+          return firestoreUpdateIn('demandes', demandeId, {statut: 'cloture', updatedAt: new Date().toISOString()}).then(function() {
+            console.log('Demande clôturée:', demandeId, '| collab:', collab.id);
+            res.writeHead(200); res.end(JSON.stringify({success: true}));
+          });
+        });
+      }).catch(function(e) { res.writeHead(500); res.end(JSON.stringify({success: false, error: e.message})); });
+    });
+    return;
+  }
+
   // POST /collab-ticket — créer un ticket SAV
   if (req.url === '/collab-ticket' && req.method === 'POST') {
     parseBody(req).then(function(body) {
