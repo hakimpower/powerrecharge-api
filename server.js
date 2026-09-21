@@ -398,7 +398,7 @@ function firestoreGetIn(collection, docId) {
         if (res.statusCode === 404) { resolve(null); return; }
         try {
           var parsed = JSON.parse(d);
-          resolve({id: docId, data: parsed.fields || {}});
+          resolve({id: docId, data: decodeFirestoreFields(parsed.fields || {})});
         } catch(e) { resolve(null); }
       });
     });
