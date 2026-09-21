@@ -397,10 +397,19 @@ function collabFromToken(token) {
   var collabId = parts[1];
   return firestoreGetIn('collaborateurs', collabId).then(function(doc) {
     if (!doc || !doc.data) return null;
-    var storedToken = doc.data.sessionToken && doc.data.sessionToken.stringValue
-      ? doc.data.sessionToken.stringValue : (doc.data.sessionToken || '');
+    // Décoder les champs Firestore REST → valeurs JS simples
+    var decoded = {};
+    Object.keys(doc.data).forEach(function(k) {
+      var v = doc.data[k];
+      if (v && v.stringValue  !== undefined) decoded[k] = v.stringValue;
+      else if (v && v.integerValue !== undefined) decoded[k] = v.integerValue;
+      else if (v && v.booleanValue !== undefined) decoded[k] = v.booleanValue;
+      else if (v && v.nullValue    !== undefined) decoded[k] = null;
+      else decoded[k] = v;
+    });
+    var storedToken = decoded.sessionToken || '';
     if (storedToken !== token) return null;
-    return {id: collabId, data: doc.data};
+    return {id: collabId, data: decoded};
   }).catch(function() { return null; });
 }
 
@@ -2452,8 +2461,8 @@ var server = http.createServer(function(req, res) {
           return;
         }
         var collabData = collab.data || {};
-        var storedMdp = collabData.mdp && collabData.mdp.stringValue ? collabData.mdp.stringValue : (collabData.mdp || '');
-        var statut = collabData.statut && collabData.statut.stringValue ? collabData.statut.stringValue : (collabData.statut || 'actif');
+        var storedMdp = collabData.mdp || '';
+        var statut    = collabData.statut || 'actif';
         console.log('collab-login: email trouvé', email, '| statut:', statut, '| mdp match:', storedMdp === mdp);
         if (storedMdp !== mdp) {
           res.writeHead(401); res.end(JSON.stringify({success: false, error: 'Identifiants incorrects'}));
@@ -2468,8 +2477,8 @@ var server = http.createServer(function(req, res) {
           sessionToken: token,
           lastLogin: new Date().toISOString()
         }).then(function() {
-          var nom = collabData.nom && collabData.nom.stringValue ? collabData.nom.stringValue : (collabData.nom || '');
-          var societe = collabData.societe && collabData.societe.stringValue ? collabData.societe.stringValue : (collabData.societe || '');
+          var nom = collabData.nom || '';
+          var societe = collabData.societe || '';
           res.writeHead(200); res.end(JSON.stringify({success: true, token: token, collabId: collab.id, nom: nom, societe: societe, email: email}));
         });
       }).catch(function(e) {
@@ -2491,7 +2500,7 @@ var server = http.createServer(function(req, res) {
       }
       collabFromToken(token).then(function(collab) {
         if (!collab) { res.writeHead(401); res.end(JSON.stringify({success: false, error: 'Session invalide'})); return; }
-        var storedMdp = collab.data.mdp && collab.data.mdp.stringValue ? collab.data.mdp.stringValue : (collab.data.mdp || '');
+        var storedMdp = collab.data.mdp || '';
         if (storedMdp !== oldMdp) { res.writeHead(401); res.end(JSON.stringify({success: false, error: 'Ancien mot de passe incorrect'})); return; }
         return firestoreUpdateIn('collaborateurs', collab.id, {mdp: newMdp, updatedAt: new Date().toISOString()}).then(function() {
           res.writeHead(200); res.end(JSON.stringify({success: true}));
@@ -2623,11 +2632,11 @@ var server = http.createServer(function(req, res) {
     var token = new URL('http://localhost' + req.url).searchParams.get('token');
     collabFromToken(token).then(function(collab) {
       if (!collab) { res.writeHead(401); res.end(JSON.stringify({success: false})); return; }
-      var nom     = collab.data.nom     && collab.data.nom.stringValue     ? collab.data.nom.stringValue     : (collab.data.nom     || '');
-      var societe = collab.data.societe && collab.data.societe.stringValue ? collab.data.societe.stringValue : (collab.data.societe || '');
-      var siret   = collab.data.siret   && collab.data.siret.stringValue   ? collab.data.siret.stringValue   : (collab.data.siret   || '');
-      var tel     = collab.data.tel     && collab.data.tel.stringValue     ? collab.data.tel.stringValue     : (collab.data.tel     || '');
-      var adresse = collab.data.adresse && collab.data.adresse.stringValue ? collab.data.adresse.stringValue : (collab.data.adresse || '');
+      var nom     = collab.data.nom     || '';
+      var societe = collab.data.societe || '';
+      var siret   = collab.data.siret   || '';
+      var tel     = collab.data.tel     || '';
+      var adresse = collab.data.adresse || '';
       res.writeHead(200); res.end(JSON.stringify({success: true, collabId: collab.id, nom: nom, societe: societe, siret: siret, tel: tel, adresse: adresse}));
     }).catch(function() { res.writeHead(401); res.end(JSON.stringify({success: false})); });
     return;
