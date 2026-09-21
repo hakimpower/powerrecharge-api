@@ -2566,6 +2566,42 @@ var server = http.createServer(function(req, res) {
     return;
   }
 
+  // POST /collab-demande-update — modifier une demande en_attente
+  if (req.url === '/collab-demande-update' && req.method === 'POST') {
+    parseBody(req).then(function(body) {
+      var token     = body.token || '';
+      var demandeId = body.demandeId || '';
+      if (!demandeId) { res.writeHead(400); res.end(JSON.stringify({success: false, error: 'demandeId manquant'})); return; }
+      collabFromToken(token).then(function(collab) {
+        if (!collab) { res.writeHead(401); res.end(JSON.stringify({success: false, error: 'Session invalide'})); return; }
+        return firestoreGetIn('demandes', demandeId).then(function(doc) {
+          if (!doc) { res.writeHead(404); res.end(JSON.stringify({success: false, error: 'Demande introuvable'})); return; }
+          var collabId = doc.data.collaborateurId || '';
+          if (collabId !== collab.id) { res.writeHead(403); res.end(JSON.stringify({success: false, error: 'Non autorisé'})); return; }
+          if (doc.data.statut !== 'en_attente') { res.writeHead(400); res.end(JSON.stringify({success: false, error: 'Seules les demandes en attente peuvent être modifiées'})); return; }
+          var update = {
+            client:    body.client    || '',
+            vehicule:  body.vehicule  || '',
+            email:     body.email     || '',
+            tel:       body.tel       || '',
+            adresse:   body.adresse   || '',
+            cp:        body.cp        || '',
+            ville:     body.ville     || '',
+            delai:     body.delai     || '',
+            livraison: body.livraison || '',
+            notes:     body.notes     || '',
+            updatedAt: new Date().toISOString()
+          };
+          return firestoreUpdateIn('demandes', demandeId, update).then(function() {
+            console.log('Demande modifiée:', demandeId, '| collab:', collab.id);
+            res.writeHead(200); res.end(JSON.stringify({success: true}));
+          });
+        });
+      }).catch(function(e){ res.writeHead(500); res.end(JSON.stringify({success: false, error: e.message})); });
+    });
+    return;
+  }
+
   // POST /collab-demande-cloture — clôturer une demande terminée
   if (req.url === '/collab-demande-cloture' && req.method === 'POST') {
     parseBody(req).then(function(body) {
