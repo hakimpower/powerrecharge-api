@@ -2546,6 +2546,8 @@ var server = http.createServer(function(req, res) {
           societe:         collab.data.societe && collab.data.societe.stringValue ? collab.data.societe.stringValue : (collab.data.societe || ''),
           client:          body.client || '',
           vehicule:        body.vehicule || '',
+          email:           body.email || '',
+          tel:             body.tel || '',
           adresse:         body.adresse || '',
           cp:              body.cp || '',
           ville:           body.ville || '',
