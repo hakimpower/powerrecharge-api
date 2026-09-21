@@ -156,7 +156,7 @@ function firestoreQuery(field, value) {
           if (doc && doc.document) {
             var name = doc.document.name;
             var docId = name.split('/').pop();
-            resolve({id: docId, data: doc.document.fields});
+            resolve({id: docId, data: decodeFirestoreFields(doc.document.fields)});
           } else {
             resolve(null);
           }
@@ -287,6 +287,24 @@ function firestoreQueryAllIn(collection, field, value) {
   });
 }
 
+// Décoder les champs Firestore REST → valeurs JS simples
+function decodeFirestoreFields(fields) {
+  if (!fields) return {};
+  var out = {};
+  Object.keys(fields).forEach(function(k) {
+    var v = fields[k];
+    if (!v || typeof v !== 'object') { out[k] = v; return; }
+    if (v.stringValue  !== undefined) out[k] = v.stringValue;
+    else if (v.integerValue !== undefined) out[k] = Number(v.integerValue);
+    else if (v.doubleValue  !== undefined) out[k] = v.doubleValue;
+    else if (v.booleanValue !== undefined) out[k] = v.booleanValue;
+    else if (v.nullValue    !== undefined) out[k] = null;
+    else if (v.timestampValue !== undefined) out[k] = v.timestampValue;
+    else out[k] = v;
+  });
+  return out;
+}
+
 function firestoreQueryIn(collection, field, value) {
   return new Promise(function(resolve) {
     var body = JSON.stringify({
@@ -322,7 +340,7 @@ function firestoreQueryIn(collection, field, value) {
           if (doc && doc.document) {
             var name = doc.document.name;
             var docId = name.split('/').pop();
-            resolve({id: docId, data: doc.document.fields});
+            resolve({id: docId, data: decodeFirestoreFields(doc.document.fields)});
           } else {
             resolve(null);
           }
@@ -443,21 +461,7 @@ function firestoreListIn(collection) {
   });
 }
 
-// Decode les champs Firestore (format {stringValue:...}) vers un objet JS simple
-function decodeFirestoreFields(fields) {
-  var out = {};
-  if (!fields) return out;
-  Object.keys(fields).forEach(function(k) {
-    var v = fields[k];
-    if (v.stringValue !== undefined) out[k] = v.stringValue;
-    else if (v.doubleValue !== undefined) out[k] = v.doubleValue;
-    else if (v.integerValue !== undefined) out[k] = parseInt(v.integerValue);
-    else if (v.booleanValue !== undefined) out[k] = v.booleanValue;
-    else if (v.nullValue !== undefined) out[k] = null;
-    else out[k] = null;
-  });
-  return out;
-}
+// decodeFirestoreFields défini plus haut (ligne ~291)
 
 function firebasePost(path, data) {
   return new Promise(function(resolve, reject) {
@@ -2463,6 +2467,7 @@ var server = http.createServer(function(req, res) {
         var collabData = collab.data || {};
         var storedMdp = collabData.mdp || '';
         var statut    = collabData.statut || 'actif';
+        console.log('collab-login: data brute mdp type:', typeof collabData.mdp, '| valeur:', JSON.stringify(collabData.mdp));
         console.log('collab-login: email trouvé', email, '| statut:', statut, '| mdp match:', storedMdp === mdp);
         if (storedMdp !== mdp) {
           res.writeHead(401); res.end(JSON.stringify({success: false, error: 'Identifiants incorrects'}));
@@ -2746,5 +2751,5 @@ setTimeout(recoverMissingDevisUrl, 15 * 60000); // Attendre 15min après démarr
 setInterval(recoverMissingDevisUrl, 6 * 60 * 60000);
 
 server.listen(PORT, function() {
-  console.log('PowerRecharge API v8.5 demarree sur port', PORT);
+  console.log('PowerRecharge API v8.6 demarree sur port', PORT);
 });
