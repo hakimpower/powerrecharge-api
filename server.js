@@ -95,6 +95,7 @@ const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY || 'AIzaSyAIUZttIylRrTBb3B
 // Rechercher un dossier dans Firestore par champ
 
 function firestoreCreate(data) {
+  if (data && data.tel && !data.telE164) { var _e = normalizePhoneE164(data.tel); if (_e) data.telE164 = _e; }
   return new Promise(function(resolve, reject) {
     var fields = {};
     Object.keys(data).forEach(function(k) {
@@ -170,6 +171,7 @@ function firestoreQuery(field, value) {
 
 // Mettre a jour un champ dans un document Firestore
 function firestoreUpdate(docId, fields) {
+  if (fields && fields.tel && !fields.telE164) { var _e = normalizePhoneE164(fields.tel); if (_e) fields.telE164 = _e; }
   return new Promise(function(resolve) {
     // Convertir les champs en format Firestore
     var fsFields = {};
@@ -594,6 +596,106 @@ function selectiveUpdate(existing, newData) {
 
 
 
+
+// ════════════════════════════════════════════════════════════════
+// SYNCHRONISATION UNIQUE RDB + FIRESTORE
+// Tous les webhooks Axonaut passent par ici : les deux bases sont
+// toujours servies, jamais l'une à la place de l'autre.
+// ════════════════════════════════════════════════════════════════
+var STATUTS_AVANCES = ['devis_envoye','new','devis_signe','affected','accepted','rdv','progress','done','sav','cloture'];
+var SOURCES_PROTEGEES = ['facebook','Facebook Lead Ads','facebook_lead','google','google_ads'];
+
+// Lit un champ Firestore quel que soit son format (REST ou objet simple)
+function fsVal(data, key) {
+  if (!data || data[key] === undefined || data[key] === null) return '';
+  var v = data[key];
+  if (typeof v === 'object') {
+    if (v.stringValue  !== undefined) return v.stringValue;
+    if (v.integerValue !== undefined) return Number(v.integerValue);
+    if (v.doubleValue  !== undefined) return v.doubleValue;
+    if (v.booleanValue !== undefined) return v.booleanValue;
+    return '';
+  }
+  return v;
+}
+
+// Cherche un dossier Firestore par axonautId, puis email, puis nom
+function trouverDossierFirestore(companyId, email, nom) {
+  return checkFirestoreDoublon('', companyId ? String(companyId) : '').then(function(fs) {
+    if (fs || !email) return fs;
+    return checkFirestoreDoublon(email, '');
+  }).then(function(fs) {
+    if (fs || !nom) return fs;
+    return firestoreQuery('client', nom).then(function(d) {
+      return d ? {source:'firestore', field:'client', doc:d} : null;
+    }).catch(function(){ return null; });
+  }).catch(function(){ return null; });
+}
+
+/**
+ * opts = {
+ *   tag, companyId, email, nom,
+ *   fields         : champs à écrire (les valeurs vides sont ignorées)
+ *   creerSiAbsentRdb : créer l'entrée RDB si elle n'existe pas
+ *   onFirestoreAbsent: callback si le dossier est introuvable dans Firestore
+ * }
+ */
+function syncDossier(opts) {
+  opts = opts || {};
+  var companyId = opts.companyId ? String(opts.companyId) : '';
+  var fields    = opts.fields || {};
+  var etat      = { rdb: 'ignoré', fs: 'ignoré' };
+
+  // ── Realtime Database ──
+  var pRdb = (companyId ? findDossierByAxonautId(companyId) : Promise.resolve(null)).then(function(existing) {
+    if (existing) {
+      return firebasePatch('/commandes_axonaut/' + existing.key + '.json', selectiveUpdate(existing.data, fields))
+        .then(function(){ etat.rdb = 'mis à jour'; });
+    }
+    if (!opts.creerSiAbsentRdb) { etat.rdb = 'absent'; return; }
+    var nouveau = Object.assign({axonautId: companyId, createdAt: new Date().toISOString()}, fields);
+    return firebasePost('/commandes_axonaut.json', nouveau).then(function(){ etat.rdb = 'créé'; });
+  }).catch(function(e){ etat.rdb = 'erreur (' + e.message + ')'; });
+
+  // ── Firestore (la base que lit l'application) ──
+  var pFs = trouverDossierFirestore(companyId, opts.email || '', opts.nom || '').then(function(fsDoc) {
+    if (!fsDoc || !fsDoc.doc) {
+      etat.fs = 'absent';
+      return opts.onFirestoreAbsent ? opts.onFirestoreAbsent() : null;
+    }
+    var data = fsDoc.doc.data || {};
+    var upd = {};
+    Object.keys(fields).forEach(function(k) {
+      var v = fields[k];
+      if (v === undefined || v === null || v === '' || k === 'updatedAt' || k === 'createdAt') return;
+      upd[k] = v;
+    });
+    // Ne jamais rétrograder un statut déjà avancé
+    if (upd.statut) {
+      var actuel = fsVal(data, 'statut');
+      if (STATUTS_AVANCES.indexOf(actuel) > -1 && actuel !== upd.statut) {
+        delete upd.statut;
+      }
+    }
+    // Ne jamais écraser une source publicitaire
+    if (upd.source && SOURCES_PROTEGEES.indexOf(fsVal(data, 'source')) > -1) delete upd.source;
+    // Ne pas écraser un nom existant par celui d'Axonaut s'il est vide côté source
+    if (upd.client && !String(upd.client).trim()) delete upd.client;
+    if (companyId && !fsVal(data, 'axonautId')) upd.axonautId = companyId;
+
+    if (!Object.keys(upd).length) { etat.fs = 'rien à changer'; return; }
+    upd.updatedAt = new Date().toISOString();
+    return firestoreUpdate(fsDoc.doc.id, upd).then(function(){
+      etat.fs = 'mis à jour (' + fsDoc.doc.id + ', par ' + fsDoc.field + ')';
+    });
+  }).catch(function(e){ etat.fs = 'erreur (' + e.message + ')'; });
+
+  return Promise.all([pRdb, pFs]).then(function() {
+    console.log('sync ' + (opts.tag || '') + ' [' + (opts.nom || companyId) + '] → RDB : ' + etat.rdb + ' | Firestore : ' + etat.fs);
+    return etat;
+  });
+}
+
 // Appeler l'API Axonaut pour recuperer les adresses d'une entreprise
 function getAxonautAddresses(companyId) {
   return new Promise(function(resolve) {
@@ -723,6 +825,652 @@ function applyPendingAddress(companyId, rdbKey) {
 }
 
 // ═══ SERVER ═══
+// ════════════════════════════════════════════════════════════════
+// AGENT IA — API V1 + V2  (/agent/v1/...)
+// Couche sécurisée entre un futur agent IA et Firestore.
+// - Firebase Admin SDK (compte de service) : n'utilise PAS la clé publique
+// - Authentification : Authorization: Bearer <AGENT_API_KEY>
+// - Liste blanche de champs + validation de chaque écriture
+// - Historique (timeline) + journal d'audit (agent_audit)
+// Si firebase-admin ou les variables d'env manquent, seules ces routes
+// sont désactivées : le reste du serveur continue de fonctionner.
+// ════════════════════════════════════════════════════════════════
+var agentDb = null, agentFV = null, agentBucket = null, agentInitError = null;
+(function initAgentAdmin() {
+  var raw = process.env.FIREBASE_SERVICE_ACCOUNT;
+  if (!raw) { agentInitError = 'FIREBASE_SERVICE_ACCOUNT manquant'; console.warn('[agent] ' + agentInitError + ' — routes /agent/v1 désactivées'); return; }
+  try {
+    var admin = require('firebase-admin');
+    var sa;
+    try { sa = JSON.parse(raw); } catch (e) { sa = JSON.parse(Buffer.from(raw, 'base64').toString('utf8')); }
+    var app = admin.initializeApp({ credential: admin.credential.cert(sa) }, 'agent');
+    agentDb = app.firestore();
+    agentFV = admin.firestore.FieldValue;
+    try { agentBucket = app.storage().bucket(process.env.FIREBASE_STORAGE_BUCKET || (sa.project_id + '.firebasestorage.app')); }
+    catch (e2) { console.warn('[agent] Storage indisponible :', e2.message); }
+    console.log('[agent] Firebase Admin SDK initialisé (projet ' + sa.project_id + ')');
+  } catch (e) {
+    agentInitError = e.message;
+    console.error('[agent] Initialisation Admin SDK impossible :', e.message);
+  }
+})();
+
+// ── Téléphone : normalisation E.164 (France par défaut) ──────────────
+function normalizePhoneE164(tel) {
+  if (!tel) return '';
+  var s = String(tel).replace(/[^\d+]/g, '');
+  if (!s) return '';
+  if (s.indexOf('00') === 0) s = '+' + s.slice(2);
+  if (s[0] === '+') return s.length >= 11 ? s : '';
+  if (s.length === 10 && s[0] === '0') return '+33' + s.slice(1);
+  if (s.length === 9 && /^[1-9]/.test(s)) return '+33' + s;
+  if (s.length === 11 && s.indexOf('33') === 0) return '+' + s;
+  return '';
+}
+function phoneVariants(e164) {
+  var v = [e164];
+  if (e164.indexOf('+33') === 0) {
+    var n = e164.slice(3);
+    v.push('0' + n, '33' + n, n, '+33 ' + n);
+  }
+  return v.slice(0, 10);
+}
+
+// ── Validateurs ───────────────────────────────────────────────────────
+function vStr(max) { return function (x) { if (typeof x !== 'string') return { error: 'texte attendu' }; x = x.trim(); if (!x) return { error: 'vide' }; if (x.length > max) return { error: 'max ' + max + ' caractères' }; return { value: x }; }; }
+function vNum(min, max) { return function (x) { var n = typeof x === 'string' ? parseFloat(x.replace(',', '.')) : x; if (typeof n !== 'number' || isNaN(n)) return { error: 'nombre attendu' }; if (n < min || n > max) return { error: 'entre ' + min + ' et ' + max }; return { value: n }; }; }
+function vEnum(list) { return function (x) { return list.indexOf(x) > -1 ? { value: x } : { error: 'valeurs possibles : ' + list.join(', ') }; }; }
+function vEmail(x) { return (typeof x === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x.trim())) ? { value: x.trim().toLowerCase() } : { error: 'email invalide' }; }
+function vCp(x) { x = String(x || '').trim(); return /^\d{5}$/.test(x) ? { value: x } : { error: 'code postal à 5 chiffres' }; }
+
+// Champs que l'agent a le droit de modifier (et rien d'autre)
+var AGENT_FIELDS = {
+  'email':                  vEmail,
+  'cp':                     vCp,
+  'type_logement':          vStr(40),
+  'projet.vehiculeMarque':  vStr(60),
+  'projet.vehiculeModele':  vStr(60),
+  'projet.puissanceKw':     vNum(1, 50),
+  'projet.phase':           vEnum(['mono', 'tri']),
+  'projet.abonnementKva':   vNum(3, 36),
+  'projet.distanceM':       vNum(0, 200),
+  'projet.emplacement':     vEnum(['interieur', 'exterieur']),
+  'projet.lieu':            vEnum(['garage', 'parking', 'facade', 'autre']),
+  'projet.typePassage':     vStr(120),
+  'projet.borneSouhaitee':  vStr(80),
+  'agent.stage':            vEnum(['nouveau', 'contacte', 'en_qualification', 'qualifie']),
+  'agent.nextAction':       vStr(300),
+  // L'agent peut enregistrer un refus (STOP) mais jamais accorder un consentement
+  'consent.whatsapp':       function (x) { return x === false ? { value: false } : { error: 'l\'agent peut seulement enregistrer un refus (false)' }; },
+  // Seule transition de statut autorisée : lead → prospect (vérifiée à part)
+  'statut':                 vEnum(['prospect'])
+};
+
+// ── Qualification : ce qui manque, calculé par le serveur ─────────────
+function getPath(o, path) { return path.split('.').reduce(function (a, k) { return a == null ? undefined : a[k]; }, o); }
+var MISSING_RULES = [
+  { key: 'client',               label: 'Nom',                      q: 'Pouvez-vous me rappeler votre nom ?',                                                                    has: function (d) { return !!(d.client && String(d.client).trim()); } },
+  { key: 'cp',                   label: 'Code postal',              q: 'Quel est le code postal du lieu d\'installation ?',                                                      has: function (d) { return !!d.cp; } },
+  { key: 'type_logement',        label: 'Type de logement',         q: 'S\'agit-il d\'une maison ou d\'un appartement en copropriété ?',                                          has: function (d) { return !!(d.type_logement || d.typeLogement); } },
+  { key: 'projet.vehicule',      label: 'Véhicule',                 q: 'Quel véhicule souhaitez-vous recharger ?',                                                               has: function (d) { return !!(getPath(d, 'projet.vehiculeModele') || getPath(d, 'projet.vehiculeMarque') || d.vehicule); } },
+  { key: 'projet.distanceM',     label: 'Distance tableau → borne', q: 'Environ quelle distance y a-t-il entre votre tableau électrique et l\'emplacement prévu pour la borne ?', has: function (d) { return getPath(d, 'projet.distanceM') != null; } },
+  { key: 'projet.emplacement',   label: 'Emplacement',              q: 'La borne sera-t-elle installée à l\'intérieur (garage) ou à l\'extérieur ?',                             has: function (d) { return !!getPath(d, 'projet.emplacement'); } },
+  { key: 'projet.phase',         label: 'Mono / triphasé',          q: 'Votre installation est-elle en monophasé ou en triphasé ? C\'est indiqué sur votre compteur ou votre facture.', has: function (d) { return !!getPath(d, 'projet.phase'); } },
+  { key: 'projet.abonnementKva', label: 'Puissance abonnement',     q: 'Quelle est la puissance de votre abonnement électrique, en kVA ? Elle figure sur votre facture.',        has: function (d) { return getPath(d, 'projet.abonnementKva') != null; } },
+  { key: 'docs.photoTableau',    label: 'Photo du tableau',         q: 'Pourriez-vous m\'envoyer une photo de votre tableau électrique ?',                                       has: function (d) { return !!getPath(d, 'docs.photoTableau'); } },
+  { key: 'docs.photoEmplacement',label: 'Photo de l\'emplacement',  q: 'Et une photo de l\'endroit où vous souhaitez installer la borne ?',                                       has: function (d) { return !!getPath(d, 'docs.photoEmplacement'); } }
+];
+function computeMissing(d) {
+  var missing = [], filled = [];
+  MISSING_RULES.forEach(function (r) {
+    if (r.has(d)) filled.push(r.label); else missing.push({ key: r.key, label: r.label, question: r.q });
+  });
+  var humanSuggested = [];
+  var logement = String(d.type_logement || d.typeLogement || '').toLowerCase();
+  if (/appart|copro|collectif/.test(logement)) humanSuggested.push('Copropriété / appartement : validation humaine recommandée');
+  if ((getPath(d, 'projet.distanceM') || 0) > 40) humanSuggested.push('Distance importante (> 40 m)');
+  var score = Math.round(filled.length / MISSING_RULES.length * 100);
+  return { missing: missing, filled: filled, score: score, humanSuggested: humanSuggested, nextQuestion: missing[0] ? missing[0].question : null };
+}
+
+// ── Utilitaires Firestore (Admin SDK) ─────────────────────────────────
+function agentSerialize(v) {
+  if (v && typeof v.toDate === 'function') return v.toDate().toISOString();
+  if (Array.isArray(v)) return v.map(agentSerialize);
+  if (v && typeof v === 'object') { var o = {}; Object.keys(v).forEach(function (k) { o[k] = agentSerialize(v[k]); }); return o; }
+  return v;
+}
+function agentGetProspect(id) {
+  return agentDb.collection('dossiers').doc(id).get().then(function (snap) {
+    if (!snap.exists) return null;
+    var d = snap.data(); if (d.deleted) return null;
+    d.id = snap.id; return d;
+  });
+}
+function agentTimeline(id, action, extra) {
+  return agentDb.collection('dossiers').doc(id).collection('timeline').add(Object.assign({
+    action: action, type: 'agent', color: 'var(--purple)', actor: 'agent',
+    date: new Date().toLocaleDateString('fr-FR'), timestamp: agentFV.serverTimestamp()
+  }, extra || {}));
+}
+function agentAudit(req, prospectId, action, payload, result) {
+  var p = JSON.stringify(payload || {}); if (p.length > 4000) p = p.slice(0, 4000) + '…';
+  return agentDb.collection('agent_audit').add({
+    prospectId: prospectId || null, action: action, method: req.method, path: req.url.split('?')[0],
+    payload: p, result: result, ip: (req.headers['x-forwarded-for'] || '').split(',')[0] || null,
+    at: agentFV.serverTimestamp()
+  }).catch(function (e) { console.warn('[agent] audit error:', e.message); });
+}
+function agentRefreshCache(id, d) {
+  var m = computeMissing(d);
+  return agentDb.collection('dossiers').doc(id).update({
+    'agent.missing': m.missing.map(function (x) { return x.label; }),
+    'agent.qualificationScore': m.score,
+    'agent.missingUpdatedAt': new Date().toISOString()
+  }).then(function () { return m; });
+}
+
+
+// Applique une mise à jour en respectant la liste blanche (utilisée par PATCH et par l'agent IA)
+function agentApplyPatch(id, d, input, req) {
+  var nowIso = new Date().toISOString();
+  var ref = agentDb.collection('dossiers').doc(id);
+  if (getPath(d, 'agent.humanRequired')) return Promise.resolve({ code: 423, body: { error: 'Dossier en attente d\'intervention humaine : modifications bloquées' } });
+  var update = {}, errors = {}, changes = [];
+  Object.keys(input || {}).forEach(function (k) {
+    var validator = AGENT_FIELDS[k];
+    if (!validator) { errors[k] = 'champ non autorisé'; return; }
+    var r = validator(input[k]);
+    if (r.error) { errors[k] = r.error; return; }
+    if (k === 'statut' && d.statut !== 'lead') { errors[k] = 'transition autorisée uniquement depuis lead'; return; }
+    var old = getPath(d, k);
+    if (old === r.value) return;
+    update[k] = r.value; changes.push({ field: k, oldValue: old === undefined ? null : old, newValue: r.value });
+    if (k === 'cp') update.dept = r.value.slice(0, 2);
+    if (k === 'consent.whatsapp') { update['consent.source'] = 'agent'; update['consent.at'] = nowIso; }
+  });
+  if (Object.keys(errors).length && !changes.length) { if (req) agentAudit(req, id, 'patch', input, 'rejeté'); return Promise.resolve({ code: 400, body: { error: 'Aucune modification valide', errors: errors } }); }
+  if (!changes.length) return Promise.resolve({ code: 200, body: { success: true, changes: [], errors: errors } });
+  update['agent.lastInteractionAt'] = nowIso; update.updatedAt = nowIso;
+  return ref.update(update).then(function () {
+    return Promise.all(changes.map(function (c) {
+      return agentTimeline(id, 'Agent : ' + c.field + ' → ' + c.newValue, { field: c.field, oldValue: c.oldValue, newValue: c.newValue });
+    }));
+  }).then(function () { return agentGetProspect(id); })
+    .then(function (nd) { return agentRefreshCache(id, nd); })
+    .then(function (q) {
+      if (req) agentAudit(req, id, 'patch', input, 'ok');
+      return { code: 200, body: { success: true, changes: changes, errors: errors, qualification: q } };
+    });
+}
+
+// ── Authentification + limite de débit ───────────────────────────────
+var agentRate = { windowStart: 0, count: 0 };
+function agentAuthOk(req) {
+  var key = process.env.AGENT_API_KEY || '';
+  if (key.length < 24) return false;
+  var m = String(req.headers['authorization'] || '').match(/^Bearer\s+(.+)$/);
+  if (!m) return false;
+  var a = Buffer.from(m[1]), b = Buffer.from(key);
+  return a.length === b.length && require('crypto').timingSafeEqual(a, b);
+}
+function agentRateOk() {
+  var now = Date.now();
+  if (now - agentRate.windowStart > 60000) { agentRate.windowStart = now; agentRate.count = 0; }
+  agentRate.count++;
+  return agentRate.count <= 120;
+}
+function agentSend(res, code, obj) { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); }
+
+// ════════════════════════ AGENT IA — V2 : photos + cerveau ════════════════════════
+var PHOTO_KINDS = {
+  tableau:     { flag: 'docs.photoTableau',     label: 'Tableau électrique' },
+  compteur:    { flag: 'docs.photoCompteur',    label: 'Compteur' },
+  emplacement: { flag: 'docs.photoEmplacement', label: 'Emplacement de la borne' },
+  passage:     { flag: 'docs.photoPassage',     label: 'Passage du câble' },
+  autre:       { flag: null,                    label: 'Autre photo' },
+  a_classer:   { flag: null,                    label: 'Photo à classer' }
+};
+
+// Enregistre une photo dans Storage + la rattache au dossier (visible dans « Mes Photos »)
+function agentSavePhoto(id, buffer, contentType, kind, source) {
+  if (!agentBucket) return Promise.reject(new Error('Firebase Storage non configuré'));
+  kind = PHOTO_KINDS[kind] ? kind : 'a_classer';
+  var photoId = 'ag_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+  var ext = /png/.test(contentType) ? 'png' : 'jpg';
+  var path = 'prospects/' + id + '/' + photoId + '.' + ext;
+  var token = require('crypto').randomUUID();
+  var file = agentBucket.file(path);
+  return file.save(buffer, { resumable: false, metadata: { contentType: contentType, metadata: { firebaseStorageDownloadTokens: token } } }).then(function () {
+    var url = 'https://firebasestorage.googleapis.com/v0/b/' + agentBucket.name + '/o/' + encodeURIComponent(path) + '?alt=media&token=' + token;
+    var info = PHOTO_KINDS[kind];
+    return agentDb.collection('dossiers').doc(id).collection('photos').doc(photoId).set({
+      url: url, label: info.label, photoId: photoId, type: 'storage', kind: kind,
+      storagePath: path, contentType: contentType, source: source || 'agent', uploadedAt: agentFV.serverTimestamp()
+    }).then(function () {
+      var upd = { updatedAt: new Date().toISOString() };
+      if (info.flag) upd[info.flag] = true;
+      return agentDb.collection('dossiers').doc(id).update(upd);
+    }).then(function () { return agentTimeline(id, 'Photo reçue : ' + info.label, { type: 'photo' }); })
+      .then(function () { return { photoId: photoId, url: url, kind: kind, storagePath: path }; });
+  });
+}
+
+// L'agent identifie ce que montre une photo reçue
+function agentClassifyPhoto(id, photoId, kind) {
+  if (!PHOTO_KINDS[kind] || kind === 'a_classer') return Promise.resolve({ error: 'type de photo invalide' });
+  var ref = agentDb.collection('dossiers').doc(id).collection('photos').doc(photoId);
+  return ref.get().then(function (snap) {
+    if (!snap.exists) return { error: 'photo introuvable' };
+    var info = PHOTO_KINDS[kind];
+    return ref.update({ kind: kind, label: info.label }).then(function () {
+      var upd = {}; if (info.flag) upd[info.flag] = true;
+      return Object.keys(upd).length ? agentDb.collection('dossiers').doc(id).update(upd) : null;
+    }).then(function () { return agentTimeline(id, 'Agent : photo identifiée → ' + info.label, { type: 'photo' }); })
+      .then(function () { return agentGetProspect(id); })
+      .then(function (nd) { return agentRefreshCache(id, nd); })
+      .then(function (q) { return { success: true, kind: kind, qualification: q }; });
+  });
+}
+
+// ── Appel à l'API Claude ──────────────────────────────────────────────
+function agentClaude(body) {
+  return new Promise(function (resolve, reject) {
+    var data = JSON.stringify(body);
+    var rq = https.request({
+      hostname: 'api.anthropic.com', path: '/v1/messages', method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-length': Buffer.byteLength(data) }
+    }, function (rs) {
+      var d = ''; rs.on('data', function (c) { d += c; });
+      rs.on('end', function () {
+        var j; try { j = JSON.parse(d); } catch (e) { return reject(new Error('Réponse Claude illisible')); }
+        if (rs.statusCode >= 400) return reject(new Error('Claude API ' + rs.statusCode + ' : ' + ((j.error && j.error.message) || d.slice(0, 200))));
+        resolve(j);
+      });
+    });
+    rq.setTimeout(60000, function () { rq.destroy(new Error('Délai dépassé (Claude API)')); });
+    rq.on('error', reject);
+    rq.end(data);
+  });
+}
+
+var AGENT_TOOLS = [
+  { name: 'update_prospect',
+    description: 'Enregistre dans le dossier les informations données par le prospect. Appelle-le dès qu\'une information utile est donnée, avant de répondre. Champs possibles : projet.vehiculeMarque, projet.vehiculeModele (texte), projet.distanceM (nombre de mètres), projet.emplacement ("interieur"|"exterieur"), projet.lieu ("garage"|"parking"|"facade"|"autre"), projet.phase ("mono"|"tri"), projet.abonnementKva (nombre), projet.puissanceKw (nombre), projet.typePassage (texte), projet.borneSouhaitee (texte), email, cp (5 chiffres), type_logement (texte), agent.stage ("contacte"|"en_qualification"|"qualifie"), agent.nextAction (texte), consent.whatsapp (false uniquement si le prospect refuse d\'être contacté).',
+    input_schema: { type: 'object', properties: { fields: { type: 'object', description: 'Paires champ → valeur, ex. {"projet.vehiculeModele":"Model Y","projet.distanceM":9}' } }, required: ['fields'] } },
+  { name: 'classify_photo',
+    description: 'Indique ce que montre une photo envoyée par le prospect.',
+    input_schema: { type: 'object', properties: { photo_id: { type: 'string' }, kind: { type: 'string', enum: ['tableau', 'compteur', 'emplacement', 'passage', 'autre'] } }, required: ['photo_id', 'kind'] } },
+  { name: 'add_note',
+    description: 'Ajoute une note interne au dossier (visible uniquement par l\'équipe), par exemple une précision utile au devis ou une information que le prospect ne connaît pas.',
+    input_schema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } },
+  { name: 'update_summary',
+    description: 'Met à jour le résumé factuel du projet et la prochaine action pour l\'équipe. À appeler quand la qualification est complète ou qu\'une information importante change.',
+    input_schema: { type: 'object', properties: { summary: { type: 'string' }, next_action: { type: 'string' } }, required: ['summary'] } },
+  { name: 'request_human',
+    description: 'Transfère le dossier à un conseiller humain. Après cet appel, envoie un dernier message au prospect pour lui dire qu\'un conseiller le recontacte.',
+    input_schema: { type: 'object', properties: { reason: { type: 'string' }, summary: { type: 'string' } }, required: ['reason', 'summary'] } }
+];
+
+function agentSystemPrompt(d, q, photos) {
+  var p = d.projet || {};
+  var known = [];
+  function k(label, v) { if (v !== undefined && v !== null && String(v).trim() !== '') known.push('- ' + label + ' : ' + v); }
+  k('Nom', d.client); k('Code postal', d.cp); k('Département', d.dept); k('Ville', d.ville);
+  k('Type de logement', d.type_logement || d.typeLogement); k('Email', d.email);
+  k('Véhicule', [p.vehiculeMarque, p.vehiculeModele].filter(Boolean).join(' ') || d.vehicule);
+  k('Distance tableau → borne (m)', p.distanceM); k('Emplacement', p.emplacement); k('Lieu', p.lieu);
+  k('Phase', p.phase); k('Abonnement (kVA)', p.abonnementKva); k('Type de passage', p.typePassage); k('Borne souhaitée', p.borneSouhaitee);
+  var missing = q.missing.length ? q.missing.map(function (m, i) { return (i + 1) + '. ' + m.label + ' — suggestion : « ' + m.question + ' »'; }).join('\n') : 'Aucune : la qualification est complète.';
+  var ph = photos.length ? photos.map(function (x) { return '- ' + x.photoId + ' : ' + x.label; }).join('\n') : 'Aucune.';
+  return [
+    'Tu es l\'assistant virtuel de Power Recharge, entreprise qui installe des bornes de recharge pour véhicules électriques en Normandie et dans les Yvelines. Tu échanges avec un prospect par messagerie instantanée.',
+    '',
+    'OBJECTIF : qualifier son projet pour que l\'équipe prépare un devis, en recueillant uniquement les informations qui manquent.',
+    '',
+    'STYLE : français, vouvoiement, chaleureux et professionnel. Messages courts (2 à 3 phrases), une seule question à la fois, sans liste ni mise en forme. Un emoji au maximum.',
+    '',
+    'RÈGLES :',
+    '- Ne redemande jamais une information déjà connue (section DOSSIER).',
+    '- Suis l\'ordre de la section INFORMATIONS MANQUANTES en reformulant naturellement.',
+    '- Dès que le prospect donne une information utile, enregistre-la avec update_prospect avant de répondre. Convertis en valeurs précises (« une dizaine de mètres » → 10). Si c\'est trop vague, redemande poliment.',
+    '- Si le prospect ne connaît pas une réponse (phase, kVA), explique en une phrase où la trouver ; s\'il ne sait toujours pas, note-le avec add_note et passe à la suite.',
+    '- Quand une photo est reçue, identifie ce qu\'elle montre et appelle classify_photo. Si elle est floue ou hors sujet, demande-en une autre.',
+    '- Ne donne jamais de prix, de remise, de délai ferme ni de date d\'intervention : un conseiller s\'en charge avec le devis.',
+    '- Ne fais aucun diagnostic électrique ni conseil de sécurité.',
+    '- Logement en copropriété : recueille le véhicule et le type de place (parking privé, box, extérieur), puis appelle request_human, car ces projets demandent une étude spécifique.',
+    '- Appelle request_human puis préviens le prospect qu\'un conseiller le recontacte si : demande de remise ou négociation, projet professionnel ou plusieurs bornes, mécontentement ou litige, problème électrique ou SAV, question à laquelle tu ne sais pas répondre, ou demande explicite de parler à quelqu\'un.',
+    '- Quand toutes les informations sont réunies, appelle update_summary avec un résumé factuel, remercie le prospect et dis-lui qu\'un conseiller lui envoie son devis rapidement.',
+    '- N\'invente rien. Si on te demande si tu es une IA, réponds honnêtement que tu es l\'assistant virtuel de Power Recharge.',
+    '',
+    'DOSSIER (déjà connu) :', known.length ? known.join('\n') : '- (vide)',
+    '',
+    'INFORMATIONS MANQUANTES (dans l\'ordre) :', missing,
+    '',
+    'POINTS D\'ATTENTION :', q.humanSuggested.length ? q.humanSuggested.map(function (x) { return '- ' + x; }).join('\n') : '- Aucun.',
+    '',
+    'PHOTOS DÉJÀ REÇUES :', ph,
+    '',
+    'Date du jour : ' + new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) + '.'
+  ].join('\n');
+}
+
+// Exécute un outil demandé par l'agent — toujours via les mêmes garde-fous que l'API
+function agentRunTool(id, name, input) {
+  input = input || {};
+  return agentGetProspect(id).then(function (d) {
+    if (!d) return { error: 'dossier introuvable' };
+    if (name === 'update_prospect') return agentApplyPatch(id, d, input.fields || {}, null).then(function (r) { return r.body; });
+    if (name === 'classify_photo') return agentClassifyPhoto(id, String(input.photo_id || ''), String(input.kind || ''));
+    if (name === 'add_note') {
+      var t = vStr(2000)(input.text); if (t.error) return { error: t.error };
+      return agentTimeline(id, 'Note agent : ' + t.value, { type: 'agent_note' }).then(function () { return { success: true }; });
+    }
+    if (name === 'update_summary') {
+      var s = vStr(3000)(input.summary); if (s.error) return { error: s.error };
+      var upd = { 'agent.summary': s.value, 'agent.summaryAt': new Date().toISOString() };
+      if (input.next_action) { var na = vStr(300)(input.next_action); if (!na.error) upd['agent.nextAction'] = na.value; }
+      return agentDb.collection('dossiers').doc(id).update(upd).then(function () { return agentTimeline(id, 'Résumé de conversation mis à jour'); }).then(function () { return { success: true }; });
+    }
+    if (name === 'request_human') {
+      var rs = vStr(500)(input.reason); if (rs.error) return { error: rs.error };
+      var nowIso = new Date().toISOString();
+      var hu = { 'agent.humanRequired': true, 'agent.humanReason': rs.value, 'agent.humanRequestedAt': nowIso, 'agent.status': 'paused', updatedAt: nowIso };
+      if (input.summary) { var hs = vStr(3000)(input.summary); if (!hs.error) hu['agent.summary'] = hs.value; }
+      return agentDb.collection('dossiers').doc(id).update(hu).then(function () {
+        return agentTimeline(id, 'Intervention humaine demandée : ' + rs.value, { type: 'agent_human', color: 'var(--red)' });
+      }).then(function () {
+        if (process.env.ZAP_AGENT_HUMAN) sendZapierNotif(process.env.ZAP_AGENT_HUMAN, { dossierId: id, client: d.client || '', tel: d.tel || '', raison: rs.value, resume: hu['agent.summary'] || '' });
+        return { success: true, message: 'Dossier transféré à un conseiller. Préviens le prospect.' };
+      });
+    }
+    return { error: 'outil inconnu' };
+  });
+}
+
+var TOOL_LABELS = { update_prospect: 'Dossier mis à jour', classify_photo: 'Photo identifiée', add_note: 'Note ajoutée', update_summary: 'Résumé mis à jour', request_human: 'Transfert à un conseiller' };
+
+// Enregistre un message de la conversation
+function agentSaveMessage(id, msg) {
+  msg.at = new Date().toISOString();
+  return agentDb.collection('dossiers').doc(id).collection('messages').add(msg);
+}
+
+// Un tour de conversation : message entrant (ou démarrage) → réponse de l'agent
+function runAgentTurn(id, opts) {
+  opts = opts || {};
+  var channel = opts.channel || 'simulateur';
+  if (!process.env.ANTHROPIC_API_KEY) return Promise.resolve({ code: 503, body: { error: 'ANTHROPIC_API_KEY manquant sur Render' } });
+  return agentGetProspect(id).then(function (d) {
+    if (!d) return { code: 404, body: { error: 'Dossier introuvable' } };
+    var ref = agentDb.collection('dossiers').doc(id);
+    var text = typeof opts.text === 'string' ? opts.text.trim().slice(0, 2000) : '';
+    var photoId = opts.photoId ? String(opts.photoId) : '';
+    var incoming = Promise.resolve();
+
+    if (text || photoId) {
+      var cm = { role: 'client', text: text, channel: channel };
+      if (photoId) cm.photoId = photoId;
+      incoming = agentSaveMessage(id, cm).then(function () {
+        return ref.update({ 'conv.lastClientMsg': text || '[photo]', 'conv.lastMessageAt': new Date().toISOString(), 'conv.messageCount': agentFV.increment(1), 'conv.channel': channel });
+      });
+    } else if (!opts.start) {
+      return { code: 400, body: { error: 'text, photoId ou start requis' } };
+    }
+
+    return incoming.then(function () {
+      var a = d.agent || {};
+      // Opposition (STOP) : réponse de confirmation fixe, puis silence
+      if (/^\s*stop\s*$/i.test(text)) {
+        var bye = 'C\'est bien noté, nous ne vous contacterons plus par ce canal. Bonne journée.';
+        return ref.update({ 'consent.whatsapp': false, 'consent.source': 'client', 'consent.at': new Date().toISOString(), 'agent.status': 'stopped' })
+          .then(function () { return agentSaveMessage(id, { role: 'agent', text: bye, channel: channel }); })
+          .then(function () { return agentTimeline(id, 'Le prospect a demandé l\'arrêt des messages (STOP)', { color: 'var(--red)' }); })
+          .then(function () { return { code: 200, body: { reply: bye, stopped: true } }; });
+      }
+      if (a.status === 'stopped') return { code: 200, body: { reply: null, stopped: true } };
+      if (a.humanRequired) return { code: 200, body: { reply: null, paused: true, reason: a.humanReason || '' } };
+
+      return Promise.all([
+        ref.collection('messages').orderBy('at', 'desc').limit(30).get(),
+        ref.collection('photos').get()
+      ]).then(function (res2) {
+        var hist = []; res2[0].forEach(function (x) { hist.unshift(x.data()); });
+        var photos = []; res2[1].forEach(function (x) { var p = x.data(); photos.push({ photoId: x.id, label: p.label || '', kind: p.kind || '', storagePath: p.storagePath || '', contentType: p.contentType || 'image/jpeg' }); });
+
+        // Historique → format Claude (rôles alternés, commence par l'utilisateur)
+        var msgs = [];
+        hist.forEach(function (m) {
+          var role = m.role === 'client' ? 'user' : 'assistant';
+          var t = m.text || '';
+          if (m.photoId) t = (t ? t + '\n' : '') + '[Photo envoyée — id : ' + m.photoId + ']';
+          if (!t) return;
+          if (msgs.length && msgs[msgs.length - 1].role === role) msgs[msgs.length - 1].content += '\n' + t;
+          else msgs.push({ role: role, content: t });
+        });
+        if (!msgs.length || msgs[0].role !== 'user') msgs.unshift({ role: 'user', content: '[Contexte : le prospect a rempli un formulaire de demande. Démarre la conversation en te présentant et pose la première question utile.]' });
+        if (msgs[msgs.length - 1].role !== 'user') msgs.push({ role: 'user', content: '[Relance : poursuis la conversation.]' });
+
+        // Joindre l'image de la photo qui vient d'arriver pour que l'agent la voie
+        var withImage = Promise.resolve();
+        var cur = photoId ? photos.filter(function (p) { return p.photoId === photoId; })[0] : null;
+        if (cur && cur.storagePath && agentBucket) {
+          withImage = agentBucket.file(cur.storagePath).download().then(function (buf) {
+            var last = msgs[msgs.length - 1];
+            last.content = [{ type: 'image', source: { type: 'base64', media_type: cur.contentType, data: buf[0].toString('base64') } }, { type: 'text', text: last.content }];
+          }).catch(function (e) { console.warn('[agent] image non jointe :', e.message); });
+        }
+
+        return withImage.then(function () {
+          var q = computeMissing(d);
+          var system = agentSystemPrompt(d, q, photos);
+          var actions = [], finalText = '', lastText = '';
+          var model = process.env.AGENT_MODEL || 'claude-sonnet-5';
+
+          function loop(n) {
+            return agentClaude({ model: model, max_tokens: 1024, system: system, tools: AGENT_TOOLS, messages: msgs }).then(function (r) {
+              var texts = (r.content || []).filter(function (b) { return b.type === 'text'; }).map(function (b) { return b.text; }).join('\n').trim();
+              if (texts) lastText = texts;
+              var uses = (r.content || []).filter(function (b) { return b.type === 'tool_use'; });
+              if (r.stop_reason !== 'tool_use' || !uses.length || n >= 6) { finalText = texts || lastText; return; }
+              msgs.push({ role: 'assistant', content: r.content });
+              return Promise.all(uses.map(function (u) {
+                return agentRunTool(id, u.name, u.input).catch(function (e) { return { error: e.message }; }).then(function (out) {
+                  actions.push({ tool: u.name, label: TOOL_LABELS[u.name] || u.name, input: u.input, ok: !(out && out.error) });
+                  return { type: 'tool_result', tool_use_id: u.id, content: JSON.stringify(out).slice(0, 4000), is_error: !!(out && out.error) };
+                });
+              })).then(function (results) { msgs.push({ role: 'user', content: results }); return loop(n + 1); });
+            });
+          }
+
+          return loop(0).then(function () {
+            var reply = finalText || 'Merci pour votre message, un conseiller revient vers vous rapidement.';
+            return agentSaveMessage(id, { role: 'agent', text: reply, channel: channel, actions: actions }).then(function () { return agentGetProspect(id); });
+          }).then(function (nd) {
+            // Avancement automatique de l'étape (règles fixes, pas décidées par l'IA)
+            var na = nd.agent || {}, upd = { 'conv.lastAgentMsg': finalText || '', 'conv.lastMessageAt': new Date().toISOString(), 'conv.messageCount': agentFV.increment(1), 'agent.lastInteractionAt': new Date().toISOString() };
+            if (!na.status) upd['agent.status'] = 'active';
+            var nq = computeMissing(nd), stage = na.stage || 'nouveau', ev = [];
+            var clientReplied = hist.some(function (m) { return m.role === 'client'; });
+            if (!nq.missing.length && stage !== 'qualifie') { upd['agent.stage'] = 'qualifie'; ev.push('Agent : prospect qualifié'); if (nd.statut === 'lead') { upd.statut = 'prospect'; ev.push('Lead qualifié → passé en Prospect'); } }
+            else if (clientReplied && (stage === 'nouveau' || stage === 'contacte')) { upd['agent.stage'] = 'en_qualification'; }
+            else if (stage === 'nouveau') { upd['agent.stage'] = 'contacte'; }
+            upd['agent.missing'] = nq.missing.map(function (x) { return x.label; });
+            upd['agent.qualificationScore'] = nq.score;
+            return ref.update(upd).then(function () { return Promise.all(ev.map(function (e) { return agentTimeline(id, e); })); })
+              .then(function () { return { code: 200, body: { reply: finalText, actions: actions, stage: upd['agent.stage'] || stage, qualification: nq, paused: !!(nd.agent && nd.agent.humanRequired) } }; });
+          });
+        });
+      });
+    });
+  }).catch(function (e) {
+    console.error('[agent] tour de conversation :', e.message);
+    return { code: 502, body: { error: e.message } };
+  });
+}
+// ══════════════════════ FIN V2 ══════════════════════
+
+// ── Routeur ───────────────────────────────────────────────────────────
+function handleAgentRequest(req, res) {
+  var path = req.url.split('?')[0].replace(/\/+$/, '');
+
+  if (path === '/agent/v1/health' && req.method === 'GET') {
+    return agentSend(res, 200, { ok: !!agentDb, adminSdk: agentDb ? 'ready' : ('indisponible : ' + agentInitError), apiKeyConfigured: (process.env.AGENT_API_KEY || '').length >= 24, storage: agentBucket ? agentBucket.name : 'non configuré', claude: process.env.ANTHROPIC_API_KEY ? (process.env.AGENT_MODEL || 'claude-sonnet-5') : 'ANTHROPIC_API_KEY manquant' });
+  }
+  if (!agentDb) return agentSend(res, 503, { error: 'API agent indisponible', detail: agentInitError });
+  if (!agentAuthOk(req)) return agentSend(res, 401, { error: 'Non autorisé' });
+  if (!agentRateOk()) return agentSend(res, 429, { error: 'Trop de requêtes' });
+
+  var m;
+
+  // GET /agent/v1/prospects/by-phone/:phone
+  if ((m = path.match(/^\/agent\/v1\/prospects\/by-phone\/([^/]+)$/)) && req.method === 'GET') {
+    var e164 = normalizePhoneE164(decodeURIComponent(m[1]));
+    if (!e164) return agentSend(res, 400, { error: 'Numéro invalide' });
+    var col = agentDb.collection('dossiers');
+    return col.where('telE164', '==', e164).limit(5).get().then(function (snap) {
+      if (!snap.empty) return snap;
+      return col.where('tel', 'in', phoneVariants(e164)).limit(5).get();
+    }).then(function (snap) {
+      var found = null;
+      snap.forEach(function (doc) { var d = doc.data(); if (!found && !d.deleted) { d.id = doc.id; found = d; } });
+      if (!found) return agentSend(res, 404, { error: 'Aucun dossier pour ce numéro', telE164: e164 });
+      agentSend(res, 200, { prospect: agentSerialize(found), qualification: computeMissing(found) });
+    }).catch(function (e) { agentSend(res, 500, { error: e.message }); });
+  }
+
+  // /agent/v1/admin/backfill — normalise telE164 et calcule le cache de qualification
+  if (path === '/agent/v1/admin/backfill' && req.method === 'POST') {
+    return agentDb.collection('dossiers').get().then(function (snap) {
+      var batch = agentDb.batch(), n = 0, commits = [];
+      snap.forEach(function (doc) {
+        var d = doc.data(); if (d.deleted) return;
+        var upd = {}, mm = computeMissing(d);
+        var e = normalizePhoneE164(d.tel); if (e && e !== d.telE164) upd.telE164 = e;
+        upd['agent.missing'] = mm.missing.map(function (x) { return x.label; });
+        upd['agent.qualificationScore'] = mm.score;
+        batch.update(doc.ref, upd); n++;
+        if (n % 450 === 0) { commits.push(batch.commit()); batch = agentDb.batch(); }
+      });
+      commits.push(batch.commit());
+      return Promise.all(commits).then(function () {
+        agentAudit(req, null, 'backfill', {}, 'ok ' + n);
+        agentSend(res, 200, { success: true, dossiersMisAJour: n });
+      });
+    }).catch(function (e) { agentSend(res, 500, { error: e.message }); });
+  }
+
+  if (!(m = path.match(/^\/agent\/v1\/prospects\/([A-Za-z0-9_-]{6,40})(\/[a-z-]+)?$/))) {
+    return agentSend(res, 404, { error: 'Route agent inconnue' });
+  }
+  var id = m[1], sub = m[2] || '';
+
+  // GET /agent/v1/prospects/:id
+  if (sub === '' && req.method === 'GET') {
+    return agentGetProspect(id).then(function (d) {
+      if (!d) return agentSend(res, 404, { error: 'Dossier introuvable' });
+      agentSend(res, 200, { prospect: agentSerialize(d), qualification: computeMissing(d) });
+    }).catch(function (e) { agentSend(res, 500, { error: e.message }); });
+  }
+
+  // GET /agent/v1/prospects/:id/missing
+  if (sub === '/missing' && req.method === 'GET') {
+    return agentGetProspect(id).then(function (d) {
+      if (!d) return agentSend(res, 404, { error: 'Dossier introuvable' });
+      return agentRefreshCache(id, d).then(function (q) { agentSend(res, 200, q); });
+    }).catch(function (e) { agentSend(res, 500, { error: e.message }); });
+  }
+
+  // GET /agent/v1/prospects/:id/messages
+  if (sub === '/messages' && req.method === 'GET') {
+    return agentDb.collection('dossiers').doc(id).collection('messages').orderBy('at', 'asc').limit(200).get().then(function (snap) {
+      var out = []; snap.forEach(function (x) { var m = x.data(); m.id = x.id; out.push(agentSerialize(m)); });
+      agentSend(res, 200, { messages: out });
+    }).catch(function (e) { agentSend(res, 500, { error: e.message }); });
+  }
+
+  // Toutes les routes suivantes écrivent : on lit le corps JSON
+  return parseBody(req).then(function (body) {
+    body = body || {};
+    return agentGetProspect(id).then(function (d) {
+      if (!d) return agentSend(res, 404, { error: 'Dossier introuvable' });
+      var ref = agentDb.collection('dossiers').doc(id);
+      var nowIso = new Date().toISOString();
+
+      // PATCH /agent/v1/prospects/:id  → champs autorisés uniquement
+      if (sub === '' && req.method === 'PATCH') {
+        return agentApplyPatch(id, d, body.fields || body, req).then(function (r) { agentSend(res, r.code, r.body); });
+      }
+
+      // POST /agent/v1/prospects/:id/chat  { text?, photoId?, start?, channel? }
+      if (sub === '/chat' && req.method === 'POST') {
+        return runAgentTurn(id, { text: body.text, photoId: body.photoId, start: !!body.start, channel: body.channel || 'simulateur' }).then(function (r) {
+          agentAudit(req, id, 'chat', { text: body.text, photoId: body.photoId, start: body.start }, r.code === 200 ? 'ok' : ('erreur ' + r.code));
+          agentSend(res, r.code, r.body);
+        });
+      }
+
+      // POST /agent/v1/prospects/:id/photos  { dataBase64, contentType, kind? }
+      if (sub === '/photos' && req.method === 'POST') {
+        var ct = String(body.contentType || 'image/jpeg');
+        if (!/^image\/(jpeg|png|webp)$/.test(ct)) return agentSend(res, 400, { error: 'Format accepté : jpeg, png ou webp' });
+        var b64 = String(body.dataBase64 || '').replace(/^data:[^,]+,/, '');
+        var buf = Buffer.from(b64, 'base64');
+        if (buf.length < 1000) return agentSend(res, 400, { error: 'Image vide ou invalide' });
+        if (buf.length > 6 * 1024 * 1024) return agentSend(res, 413, { error: 'Image trop lourde (6 Mo max)' });
+        return agentSavePhoto(id, buf, ct, body.kind, body.source || 'agent').then(function (p) {
+          return agentGetProspect(id).then(function (nd) { return agentRefreshCache(id, nd); }).then(function () {
+            agentAudit(req, id, 'photo', { kind: p.kind, size: buf.length }, 'ok');
+            agentSend(res, 200, Object.assign({ success: true }, p));
+          });
+        });
+      }
+
+      // POST /agent/v1/prospects/:id/notes   { text }
+      if (sub === '/notes' && req.method === 'POST') {
+        var t = vStr(2000)(body.text); if (t.error) return agentSend(res, 400, { error: 'text : ' + t.error });
+        return agentTimeline(id, 'Note agent : ' + t.value, { type: 'agent_note' }).then(function () {
+          return ref.update({ 'agent.lastInteractionAt': nowIso });
+        }).then(function () { agentAudit(req, id, 'note', body, 'ok'); agentSend(res, 200, { success: true }); });
+      }
+
+      // POST /agent/v1/prospects/:id/events  { action, field?, oldValue?, newValue? }
+      if (sub === '/events' && req.method === 'POST') {
+        var a = vStr(300)(body.action); if (a.error) return agentSend(res, 400, { error: 'action : ' + a.error });
+        var extra = {}; ['field', 'oldValue', 'newValue'].forEach(function (k) { if (body[k] !== undefined) extra[k] = String(body[k]).slice(0, 300); });
+        return agentTimeline(id, a.value, extra).then(function () { agentAudit(req, id, 'event', body, 'ok'); agentSend(res, 200, { success: true }); });
+      }
+
+      // POST /agent/v1/prospects/:id/summary  { summary, nextAction? }
+      if (sub === '/summary' && req.method === 'POST') {
+        var s = vStr(3000)(body.summary); if (s.error) return agentSend(res, 400, { error: 'summary : ' + s.error });
+        var upd = { 'agent.summary': s.value, 'agent.summaryAt': nowIso, 'agent.lastInteractionAt': nowIso };
+        if (body.nextAction) { var na = vStr(300)(body.nextAction); if (!na.error) upd['agent.nextAction'] = na.value; }
+        return ref.update(upd).then(function () { return agentTimeline(id, 'Résumé de conversation mis à jour'); })
+          .then(function () { agentAudit(req, id, 'summary', body, 'ok'); agentSend(res, 200, { success: true }); });
+      }
+
+      // POST /agent/v1/prospects/:id/request-human  { reason, summary? }
+      if (sub === '/request-human' && req.method === 'POST') {
+        var rs = vStr(500)(body.reason); if (rs.error) return agentSend(res, 400, { error: 'reason : ' + rs.error });
+        var hu = { 'agent.humanRequired': true, 'agent.humanReason': rs.value, 'agent.humanRequestedAt': nowIso, 'agent.status': 'paused', updatedAt: nowIso };
+        if (body.summary) { var hs = vStr(3000)(body.summary); if (!hs.error) hu['agent.summary'] = hs.value; }
+        return ref.update(hu).then(function () {
+          return agentTimeline(id, 'Intervention humaine demandée : ' + rs.value, { type: 'agent_human', color: 'var(--red)' });
+        }).then(function () {
+          if (process.env.ZAP_AGENT_HUMAN) sendZapierNotif(process.env.ZAP_AGENT_HUMAN, { dossierId: id, client: d.client || '', tel: d.tel || '', raison: rs.value, resume: hu['agent.summary'] || getPath(d, 'agent.summary') || '' });
+          agentAudit(req, id, 'request-human', body, 'ok');
+          agentSend(res, 200, { success: true });
+        });
+      }
+
+      agentSend(res, 404, { error: 'Route agent inconnue' });
+    });
+  }).catch(function (e) { console.error('[agent] erreur:', e.message); agentSend(res, 500, { error: e.message }); });
+}
+// ════════════════════════ FIN AGENT IA — API V1 ════════════════════════
+
+
 var server = http.createServer(function(req, res) {
   // CORS restreint aux origines connues
   var allowedOrigins = [
@@ -734,10 +1482,13 @@ var server = http.createServer(function(req, res) {
   // Les webhooks Axonaut/Zapier sont server-to-server (pas d'Origin header) : toujours OK
   var corsOrigin = allowedOrigins.indexOf(origin) > -1 ? origin : (origin || '*');
   res.setHeader('Access-Control-Allow-Origin', corsOrigin || '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.setHeader('Vary', 'Origin');
   if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return; }
+
+  // API AGENT IA (auth + rate-limit propres)
+  if (req.url.indexOf('/agent/v1/') === 0) { handleAgentRequest(req, res); return; }
 
   // RATE LIMITING
   var ip = getClientIp(req);
@@ -752,7 +1503,7 @@ var server = http.createServer(function(req, res) {
 
   if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, {'Content-Type': 'application/json'});
-    res.end(JSON.stringify({status: 'PowerRecharge API OK', version: '8.5'}));
+    res.end(JSON.stringify({status: 'PowerRecharge API OK', version:'9.1'}));
     return;
   }
 
@@ -886,208 +1637,102 @@ var server = http.createServer(function(req, res) {
       // Mettre a jour l'adresse du prospect
       if (topic === 'address.updated') {
         console.log('Address data:', JSON.stringify(data));
-        // L'ID entreprise est dans data.company.id
         var companyId = (data.company && data.company.id) || data.company_id || data.owner_id || data.entity_id;
         var adresse3  = data.address_street || data.street || data.address || data.line1 || '';
         var ville3    = data.address_city   || data.city   || '';
         var cp3       = String(data.address_zip_code || data.zipcode || data.zip_code || data.postal_code || '');
         console.log('Address parsed - CompanyId:', companyId, '| Rue:', adresse3, '| Ville:', ville3, '| CP:', cp3);
-        if (!companyId) {
-          res.writeHead(200); res.end(JSON.stringify({success: true, message: 'Pas de company_id'}));
-          return;
-        }
-        findDossierByAxonautId(companyId).then(function(existing) {
-          var addrData = {};
-          if (adresse3) addrData.adresse = adresse3;
-          if (ville3)   addrData.ville   = ville3;
-          if (cp3)      { addrData.cp = cp3; addrData.dept = cp3.slice(0,2); }
-          addrData.updatedAt = new Date().toISOString();
-
-          if (existing) {
-            console.log('Adresse mise a jour:', adresse3, ville3, cp3);
-            firebasePatch('/commandes_axonaut/' + existing.key + '.json', addrData).then(function() {
-              res.writeHead(200); res.end(JSON.stringify({success: true}));
-            }).catch(function(e){ res.writeHead(200); res.end(JSON.stringify({error: e.message})); });
-          } else {
-            // Pas trouve dans RDB - chercher dans Firestore
-            checkFirestoreDoublon('', String(companyId)).then(function(fsDoc) {
-              if (fsDoc) {
-                console.log('Adresse mise a jour dans Firestore pour companyId:', companyId);
-                return firestoreUpdate(fsDoc.doc.id, addrData).then(function() {
-                  res.writeHead(200); res.end(JSON.stringify({success: true, source: 'firestore'}));
-                });
-              }
-              // Vraiment pas trouve - mettre en attente
-              console.log('Prospect non trouve - adresse en attente pour companyId:', companyId);
-              addrData.companyId = String(companyId);
-              return firebasePost('/pending_addresses.json', addrData).then(function() {
-                res.writeHead(200); res.end(JSON.stringify({success: true, message: 'Adresse en attente'}));
-              });
-            }).catch(function(e){ res.writeHead(200); res.end(JSON.stringify({error: e.message})); });
+        if (!companyId) { res.writeHead(200); res.end(JSON.stringify({success: true, message: 'Pas de company_id'})); return; }
+        var addrData = {};
+        if (adresse3) addrData.adresse = adresse3;
+        if (ville3)   addrData.ville   = ville3;
+        if (cp3)      { addrData.cp = cp3; addrData.dept = cp3.slice(0,2); }
+        syncDossier({
+          tag: 'address', companyId: companyId, nom: (data.company && data.company.name) || '', fields: addrData,
+          onFirestoreAbsent: function() {
+            console.log('Adresse en attente pour companyId:', companyId);
+            return firebasePost('/pending_addresses.json', Object.assign({companyId: String(companyId), updatedAt: new Date().toISOString()}, addrData));
           }
-        }).catch(function(e){ res.writeHead(200); res.end(JSON.stringify({error: e.message})); });
+        }).then(function(etat){ res.writeHead(200); res.end(JSON.stringify({success: true, etat: etat})); })
+          .catch(function(e){ res.writeHead(200); res.end(JSON.stringify({success: false, error: e.message})); });
         return;
       }
 
-      // ═══ EMPLOYEE.CREATED / EMPLOYEE.UPDATED ═══
-      // Mettre a jour tel et email depuis le contact
       if (topic === 'employee.created' || topic === 'employee.updated') {
         var companyId4 = data.company_id;
         var tel4   = data.cellphone_number || data.phone_number || data.mobile || '';
         var email4 = data.email || '';
+        var nom4   = ((data.firstname || '') + ' ' + (data.lastname || '')).trim();
         console.log('Employee:', data.firstname, data.lastname, email4, tel4, 'Company:', companyId4);
-        if (!companyId4) {
-          res.writeHead(200); res.end(JSON.stringify({success: true}));
-          return;
-        }
-        findDossierByAxonautId(companyId4).then(function(existing) {
-          if (!existing) {
-            res.writeHead(200); res.end(JSON.stringify({success: true, message: 'Prospect non trouve'}));
-            return;
-          }
-          var empUpdate = {updatedAt: new Date().toISOString()};
-          if (tel4)   empUpdate.tel   = tel4;
-          if (email4) empUpdate.email = email4;
-          if (!existing.data.client && data.firstname) {
-            empUpdate.client = (data.firstname + ' ' + (data.lastname || '')).trim();
-          }
-          console.log('Employee update:', empUpdate);
-          firebasePatch('/commandes_axonaut/' + existing.key + '.json', empUpdate).then(function() {
-            res.writeHead(200); res.end(JSON.stringify({success: true}));
-          }).catch(function(e) {
-            res.writeHead(200); res.end(JSON.stringify({success: false, error: e.message}));
-          });
-        }).catch(function(e) {
-          res.writeHead(200); res.end(JSON.stringify({success: false, error: e.message}));
-        });
+        if (!companyId4) { res.writeHead(200); res.end(JSON.stringify({success: true})); return; }
+        var champs4 = {};
+        if (tel4)   champs4.tel   = tel4;
+        if (email4) champs4.email = email4;
+        syncDossier({tag:'employee', companyId: companyId4, email: email4, nom: nom4, fields: champs4})
+          .then(function(etat){ res.writeHead(200); res.end(JSON.stringify({success: true, etat: etat})); })
+          .catch(function(e){ res.writeHead(200); res.end(JSON.stringify({success: false, error: e.message})); });
         return;
       }
 
       // ═══ QUOTATION.CREATED ═══
       // Ajouter borne et montant estimé
       if (topic === 'quotation.created') {
-        var companyId5  = data.company_id;
+        var companyId5   = data.company_id;
         var companyName5 = data.company_name || '';
-        var devisNum5   = data.number || data.id || '';
-        var borneTxt5   = stripHtml(data.title || data.subject || '');
+        var devisNum5    = data.number || data.id || '';
+        var borneTxt5    = stripHtml(data.title || data.subject || '');
         if (borneTxt5.startsWith(String(devisNum5))) borneTxt5 = borneTxt5.slice(String(devisNum5).length).trim();
-        // Ne pas remplacer par valeur par defaut - laisser vide si titre vide
         if (!borneTxt5 || borneTxt5.length < 2) borneTxt5 = '';
-        var montant5 = Number(data.pre_tax_amount || data.total_amount || 0);
-        var ref5 = 'AX-' + devisNum5;
-        // Récupérer l'URL du devis depuis le webhook
+        var montant5  = Number(data.pre_tax_amount || data.total_amount || 0);
+        var ref5      = 'AX-' + devisNum5;
         var devisUrl5 = data.customer_portal_url || data.customerPortalUrl || data.portal_url || data.devis_url || '';
+        var emailAxonaut = data.email || data.contact_email || '';
         console.log('Quotation created:', companyName5, borneTxt5, montant5, devisUrl5 ? '| URL: ' + devisUrl5 : '');
 
-        // Date + heure d'arrivée du devis dans l'application
         var nowArr5 = new Date();
         var devisEnvoyeLe = (data.created_at || data.sent_at)
           ? (data.created_at || data.sent_at).toString().replace('T',' ').slice(0,16)
           : nowArr5.getFullYear()+'-'+String(nowArr5.getMonth()+1).padStart(2,'0')+'-'+String(nowArr5.getDate()).padStart(2,'0')
             +' '+String(nowArr5.getHours()).padStart(2,'0')+':'+String(nowArr5.getMinutes()).padStart(2,'0');
-        return findDossierByAxonautId(companyId5).then(function(existing) {
-          var update5 = {
-            ref: ref5,
-            statut: 'devis_envoye',
-            updatedAt: new Date().toISOString()
-          };
-          if (borneTxt5) update5.borne = borneTxt5;
-          if (montant5) update5.montant = montant5;
-          if (devisUrl5) update5.devisUrl = devisUrl5;
-          update5.datesign = devisEnvoyeLe;
-          if (existing) {
-            return firebasePatch('/commandes_axonaut/' + existing.key + '.json', update5);
-          }
-          // Verifier dans Firestore par axonautId, puis par email, puis par nom
-          var emailAxonaut = data.email || data.contact_email || '';
 
-          function tryFindAndUpdateFirestore(attempt) {
-            return checkFirestoreDoublon('', String(companyId5)).then(function(fsDoc) {
-              if (!fsDoc && emailAxonaut) return checkFirestoreDoublon(emailAxonaut, '');
-              return fsDoc;
-            }).then(function(fsDoc) {
-              if (!fsDoc && companyName5) {
-                return firestoreQuery('client', companyName5).then(function(d){
-                  return d?{source:'firestore',field:'client',doc:d}:null;
-                }).catch(function(){return null;});
-              }
-              return fsDoc;
-            }).then(function(fsDoc) {
-              if (fsDoc) {
-                console.log('Doublon Firestore (quotation.created) pour', companyName5, '- mise a jour');
-                var fsUpdate = {ref: ref5, axonautId: String(companyId5), updatedAt: new Date().toISOString()};
-                if (montant5) fsUpdate.montant = montant5;
-                if (borneTxt5) fsUpdate.borne = borneTxt5;
-                if (devisUrl5) fsUpdate.devisUrl = devisUrl5;
-                // Lire le statut (format Firestore REST ou objet direct)
-                var fsStatut = fsDoc.doc && fsDoc.doc.data && fsDoc.doc.data.statut
-                  ? (fsDoc.doc.data.statut.stringValue || fsDoc.doc.data.statut || '')
-                  : '';
-                // Passer en devis_envoye seulement si statut pas encore plus avancé
-                var statutsAvances = ['devis_envoye','new','devis_signe','affected','accepted','rdv','progress','done','sav','cloture'];
-                if (statutsAvances.indexOf(fsStatut) === -1) {
-                  // lead, prospect ou vide → passer en devis_envoye
-                  fsUpdate.statut = 'devis_envoye';
-                  console.log('Statut mis à jour → devis_envoye:', companyName5, '(était:', fsStatut || 'vide', ')');
-                }
-                return firestoreUpdate(fsDoc.doc.id, fsUpdate).then(function(){ return '__updated__'; });
-              }
-              // Dossier pas encore dans Firestore — retry avec délai si tentative < 3
-              if (attempt < 3) {
-                var delay = attempt * 10000;
-                console.log('quotation.created: dossier introuvable pour', companyName5, '— retry dans', delay/1000+'s (tentative '+attempt+'/3)');
-                return new Promise(function(resolve) {
-                  setTimeout(function(){ resolve(tryFindAndUpdateFirestore(attempt + 1)); }, delay);
-                });
-              }
-              // Vraiment nouveau après 3 tentatives - créer dans Firestore ET RDB
-              console.log('quotation.created: création nouveau dossier après 3 tentatives —', companyName5);
-              update5.client = companyName5; update5.axonautId = String(companyId5 || '');
-              update5.tel = ''; update5.email = emailAxonaut; update5.adresse = ''; update5.ville = ''; update5.cp = ''; update5.dept = '';
-              update5.installateur = null; update5.rdv = null; update5.notes = ''; update5.imported = false;
-              update5.source = update5.source || 'axonaut';
-              update5.createdAt = new Date().toISOString();
-              // Récupérer les infos complètes depuis Axonaut avant de créer
-              return getAxonautCompanyInfo(companyId5).then(function(info) {
-                if (info) {
-                  if (info.tel)     update5.tel     = info.tel;
-                  if (info.email)   update5.email   = info.email || emailAxonaut;
-                  if (info.adresse) update5.adresse = info.adresse;
-                  if (info.ville)   update5.ville   = info.ville;
-                  if (info.cp)      { update5.cp = info.cp; update5.dept = String(info.cp).slice(0,2); }
-                }
-                // Créer dans Firestore (visible dans l'appli)
-                return firestoreCreate(update5).then(function(fsResult) {
-                  var newDocId = fsResult && fsResult.name ? fsResult.name.split('/').pop() : null;
-                  // Créer aussi dans RDB pour le suivi
-                  return firebasePost('/commandes_axonaut.json', Object.assign({}, update5, {firestoreId: newDocId}));
-                });
-              }).catch(function() {
-                // Fallback sans info Axonaut
-                return firestoreCreate(update5).then(function() {
-                  return firebasePost('/commandes_axonaut.json', update5);
-                });
-              }).then(function(){ return '__created_firestore__'; });
-            });
-          }
+        var champs5 = { ref: ref5, statut: 'devis_envoye', datesign: devisEnvoyeLe };
+        if (borneTxt5) champs5.borne    = borneTxt5;
+        if (montant5)  champs5.montant  = montant5;
+        if (devisUrl5) champs5.devisUrl = devisUrl5;
 
-          return tryFindAndUpdateFirestore(1);
-        }).then(function() {
-          // Mettre a jour Firestore aussi
-          if (montant5 > 0) {
-            firestoreQuery('ref', ref5).then(function(fsDoc) {
-              if (!fsDoc) return firestoreQuery('axonautId', String(companyId5));
-              return fsDoc;
-            }).then(function(fsDoc) {
-              if (fsDoc) firestoreUpdate(fsDoc.id, {montant: montant5, ref: ref5, datesign: devisEnvoyeLe, updatedAt: new Date().toISOString()});
-            }).catch(function(e){ console.error('Firestore created update error:', e.message); });
+        syncDossier({
+          tag: 'quotation', companyId: companyId5, email: emailAxonaut, nom: companyName5,
+          fields: champs5, creerSiAbsentRdb: true,
+          // Aucun dossier dans Firestore : on le crée avec les infos Axonaut
+          onFirestoreAbsent: function() {
+            console.log('quotation.created : création du dossier Firestore pour', companyName5);
+            var nouveau = Object.assign({
+              client: companyName5, axonautId: String(companyId5 || ''), email: emailAxonaut,
+              tel: '', adresse: '', ville: '', cp: '', dept: '',
+              source: 'axonaut', installateur: null, rdv: null, notes: '', imported: false,
+              createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+            }, champs5);
+            return getAxonautCompanyInfo(companyId5).then(function(info) {
+              if (info) {
+                if (info.tel)     nouveau.tel     = info.tel;
+                if (info.email)   nouveau.email   = info.email || emailAxonaut;
+                if (info.adresse) nouveau.adresse = info.adresse;
+                if (info.ville)   nouveau.ville   = info.ville;
+                if (info.cp)      { nouveau.cp = info.cp; nouveau.dept = String(info.cp).slice(0,2); }
+              }
+              return firestoreCreate(nouveau);
+            }).catch(function(){ return firestoreCreate(nouveau); });
           }
-          res.writeHead(200); res.end(JSON.stringify({success: true}));
+        }).then(function(etat){
+          res.writeHead(200); res.end(JSON.stringify({success: true, etat: etat}));
+        }).catch(function(e){
+          console.error('quotation.created erreur:', e.message);
+          res.writeHead(200); res.end(JSON.stringify({success: false, error: e.message}));
         });
+        return;
       }
 
-      // ═══ QUOTATION.UPDATED ═══
-      // Mise a jour devis ou signature
+      // ═══ QUOTATION.UPDATED (signature du devis) ═══
       if (topic.includes('quotation.updated')) {
         var statut6  = (data.status || '').toLowerCase();
         var sigDate6 = data.electronic_signature_date;
@@ -1099,9 +1744,6 @@ var server = http.createServer(function(req, res) {
                           (typeof sigDate6 === 'string' && sigDate6.length > 0)
                         );
         // Signe si : statut accepte/signe/won ET (signature presente OU customerAnswer OU statut explicitement signe/won)
-        var isSigned = (statut6 === 'accepted' || statut6 === 'signed' || statut6 === 'won')
-                    && (hasSignature || isCustomerAnswer || statut6 === 'signed' || statut6 === 'won');
-        console.log('isSigned check - topic:', topic, '| statut:', statut6, '| hasSignature:', !!hasSignature, '| isCustomerAnswer:', isCustomerAnswer, '| isSigned:', isSigned);
         var devisNum6 = data.number || data.id || '';
         var ref6 = 'AX-' + devisNum6;
         var borneTxt6 = stripHtml(data.title || data.subject || '');
@@ -1110,58 +1752,29 @@ var server = http.createServer(function(req, res) {
         var sigStr6 = '';
         if (sigDate6 && typeof sigDate6 === 'object' && sigDate6.date) sigStr6 = sigDate6.date.slice(0,10);
         else if (sigDate6 && typeof sigDate6 === 'string') sigStr6 = sigDate6.slice(0,10);
-        var montant6 = Number(data.pre_tax_amount || data.total_amount || 0);
+        var montant6   = Number(data.pre_tax_amount || data.total_amount || 0);
         var companyId6 = data.company_id;
         console.log('Quotation updated - signe:', isSigned, '| ref:', ref6, '| montant:', montant6);
 
-        return findDossierByAxonautId(companyId6).then(function(existing) {
-          if (!existing) return findDossierByRef(ref6);
-          return existing;
-        }).then(function(existing) {
-          var update6 = {
-            ref: ref6,
-            statut: isSigned ? 'devis_signe' : 'prospect',
-            updatedAt: new Date().toISOString()
-          };
-          // Ne pas ecraser la borne si valeur par defaut ou vide
-          if (borneTxt6 && borneTxt6 !== 'Borne a definir') update6.borne = borneTxt6;
-          if (montant6)  update6.montant = montant6;
-          if (isSigned && sigStr6) update6.signeAt = sigStr6; // signeAt = date/heure signature, datesign = date envoi (ne pas ecraser)
-          if (existing) {
-            return firebasePatch('/commandes_axonaut/' + existing.key + '.json', update6);
-          }
-          // Creer si pas trouve
-          update6.client = data.company_name || 'Client Axonaut';
-          update6.axonautId = String(companyId6 || '');
-          update6.tel = ''; update6.email = ''; update6.adresse = ''; update6.ville = ''; update6.cp = ''; update6.dept = '';
-          update6.installateur = null; update6.rdv = null; update6.notes = ''; update6.imported = false;
-          update6.createdAt = new Date().toISOString();
-          return firebasePost('/commandes_axonaut.json', update6);
-        }).then(function(existing) {
-          // Mettre a jour aussi Firestore si montant change
-          if (montant6 > 0) {
-            var refSearch = ref6;
-            firestoreQuery('ref', refSearch).then(function(fsDoc) {
-              if (!fsDoc) return firestoreQuery('axonautId', String(companyId6));
-              return fsDoc;
-            }).then(function(fsDoc) {
-              if (fsDoc) {
-                var fsUpdate = {
-                  montant: montant6,
-                  updatedAt: new Date().toISOString()
-                };
-                if (borneTxt6) fsUpdate.borne = borneTxt6;
-                if (isSigned) fsUpdate.statut = 'devis_signe';
-                if (isSigned && sigStr6) fsUpdate.signeAt = sigStr6;
-                return firestoreUpdate(fsDoc.id, fsUpdate);
-              }
-            }).catch(function(e){ console.error('Firestore montant update error:', e.message); });
-          }
-          res.writeHead(200); res.end(JSON.stringify({success: true, signed: isSigned}));
+        var champs6 = { ref: ref6 };
+        if (borneTxt6 && borneTxt6 !== 'Borne a definir') champs6.borne = borneTxt6;
+        if (montant6) champs6.montant = montant6;
+        if (isSigned) {
+          champs6.statut = 'devis_signe';
+          if (sigStr6) champs6.signeAt = sigStr6;
+        }
+        syncDossier({
+          tag: 'quotation.updated', companyId: companyId6, email: data.email || '',
+          nom: data.company_name || '', fields: champs6, creerSiAbsentRdb: true
+        }).then(function(etat){
+          res.writeHead(200); res.end(JSON.stringify({success: true, signed: isSigned, etat: etat}));
+        }).catch(function(e){
+          res.writeHead(200); res.end(JSON.stringify({success: false, error: e.message}));
         });
+        return;
       }
 
-      // event.created / event.updated — devis envoyé par email (Axonaut)
+
       if (topic === 'event.created' || topic === 'event.updated') {
         var evCompanyId = data.company_id ? String(data.company_id) : '';
         var evTitle = data.title || '';
@@ -2789,5 +3402,5 @@ setTimeout(recoverMissingDevisUrl, 15 * 60000); // Attendre 15min après démarr
 setInterval(recoverMissingDevisUrl, 6 * 60 * 60000);
 
 server.listen(PORT, function() {
-  console.log('PowerRecharge API v8.6 demarree sur port', PORT);
+  console.log('PowerRecharge API v9.1 demarree sur port', PORT);
 });
