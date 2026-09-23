@@ -730,6 +730,32 @@ function getAxonautAddresses(companyId) {
 }
 
 
+
+// Récupère l'URL client d'un devis précis sur l'API Axonaut
+function getAxonautQuotationUrl(quotationId) {
+  if (!quotationId) return Promise.resolve('');
+  return new Promise(function(resolve) {
+    var req = https.request({
+      hostname: 'app.axonaut.com',
+      path: '/api/v1/quotations/' + encodeURIComponent(quotationId),
+      method: 'GET',
+      headers: {'apiKey': AXONAUT_KEY}
+    }, function(res) {
+      var d = '';
+      res.on('data', function(c){ d += c; });
+      res.on('end', function(){
+        try {
+          var q = JSON.parse(d);
+          resolve(q.customer_portal_url || q.customerPortalUrl || q.portal_url || '');
+        } catch(e) { resolve(''); }
+      });
+    });
+    req.on('error', function(e){ console.log('getAxonautQuotationUrl error:', e.message); resolve(''); });
+    req.setTimeout(8000, function(){ req.destroy(); resolve(''); });
+    req.end();
+  });
+}
+
 // Récupérer les infos complètes d'un prospect Axonaut (pour création manuelle de devis)
 function getAxonautCompanyInfo(companyId) {
   if (!companyId) return Promise.resolve(null);
@@ -1698,9 +1724,13 @@ var server = http.createServer(function(req, res) {
         var champs5 = { ref: ref5, statut: 'devis_envoye', datesign: devisEnvoyeLe };
         if (borneTxt5) champs5.borne    = borneTxt5;
         if (montant5)  champs5.montant  = montant5;
-        if (devisUrl5) champs5.devisUrl = devisUrl5;
 
-        syncDossier({
+        // L'URL du devis n'est pas toujours dans le webhook : on la demande à Axonaut
+        var pUrl = devisUrl5 ? Promise.resolve(devisUrl5) : getAxonautQuotationUrl(data.id || devisNum5);
+        return pUrl.then(function(url) {
+          if (url) { champs5.devisUrl = url; console.log('devisUrl récupéré :', url); }
+          else console.log('devisUrl introuvable pour le devis', devisNum5, '— sera complété plus tard');
+          return syncDossier({
           tag: 'quotation', companyId: companyId5, email: emailAxonaut, nom: companyName5,
           fields: champs5, creerSiAbsentRdb: true,
           // Aucun dossier dans Firestore : on le crée avec les infos Axonaut
@@ -1723,13 +1753,13 @@ var server = http.createServer(function(req, res) {
               return firestoreCreate(nouveau);
             }).catch(function(){ return firestoreCreate(nouveau); });
           }
+          });
         }).then(function(etat){
           res.writeHead(200); res.end(JSON.stringify({success: true, etat: etat}));
         }).catch(function(e){
           console.error('quotation.created erreur:', e.message);
           res.writeHead(200); res.end(JSON.stringify({success: false, error: e.message}));
         });
-        return;
       }
 
       // ═══ QUOTATION.UPDATED (signature du devis) ═══
@@ -1763,9 +1793,13 @@ var server = http.createServer(function(req, res) {
           champs6.statut = 'devis_signe';
           if (sigStr6) champs6.signeAt = sigStr6;
         }
-        syncDossier({
-          tag: 'quotation.updated', companyId: companyId6, email: data.email || '',
-          nom: data.company_name || '', fields: champs6, creerSiAbsentRdb: true
+        var url6 = data.customer_portal_url || data.customerPortalUrl || data.portal_url || '';
+        (url6 ? Promise.resolve(url6) : getAxonautQuotationUrl(data.id || devisNum6)).then(function(u){
+          if (u) champs6.devisUrl = u;
+          return syncDossier({
+            tag: 'quotation.updated', companyId: companyId6, email: data.email || '',
+            nom: data.company_name || '', fields: champs6, creerSiAbsentRdb: true
+          });
         }).then(function(etat){
           res.writeHead(200); res.end(JSON.stringify({success: true, signed: isSigned, etat: etat}));
         }).catch(function(e){
