@@ -700,7 +700,7 @@ function syncDossier(opts) {
 function getAxonautAddresses(companyId) {
   return new Promise(function(resolve) {
     var options = {
-      hostname: 'app.axonaut.com',
+      hostname: 'app.axonaut.com', family: 4, lookup: axonautLookup,
       path: '/api/v1/companies/' + companyId + '/addresses',
       method: 'GET',
       headers: {'apiKey': AXONAUT_KEY}
@@ -731,29 +731,67 @@ function getAxonautAddresses(companyId) {
 
 
 
-// Récupère l'URL client d'un devis précis sur l'API Axonaut
-function getAxonautQuotationUrl(quotationId) {
-  if (!quotationId) return Promise.resolve('');
-  return new Promise(function(resolve) {
+
+// ════════════════════════════════════════════════════════════════
+// RÉSOLUTION DNS ROBUSTE POUR AXONAUT
+// Render échoue régulièrement sur getaddrinfo ENOTFOUND app.axonaut.com.
+// On résout via des DNS publics, on garde l'IP en cache, et on réessaie.
+// ════════════════════════════════════════════════════════════════
+var dns = require('dns');
+try { dns.setServers(['1.1.1.1', '8.8.8.8', '9.9.9.9']); } catch(e) { console.warn('dns.setServers:', e.message); }
+var axonautIp = { ip: null, at: 0 };
+
+function axonautLookup(hostname, options, cb) {
+  if (typeof options === 'function') { cb = options; options = {}; }
+  var now = Date.now();
+  if (axonautIp.ip && now - axonautIp.at < 600000) return cb(null, axonautIp.ip, 4);
+  dns.resolve4(hostname, function(err, addrs) {
+    if (!err && addrs && addrs.length) { axonautIp = { ip: addrs[0], at: now }; return cb(null, addrs[0], 4); }
+    // Repli sur le résolveur système
+    dns.lookup(hostname, { family: 4 }, function(e2, addr, fam) {
+      if (!e2 && addr) axonautIp = { ip: addr, at: now };
+      cb(e2, addr, fam || 4);
+    });
+  });
+}
+
+// Appel GET sur l'API Axonaut, avec 3 tentatives espacées
+function axonautGet(path, tentative) {
+  tentative = tentative || 1;
+  return new Promise(function(resolve, reject) {
     var req = https.request({
-      hostname: 'app.axonaut.com',
-      path: '/api/v1/quotations/' + encodeURIComponent(quotationId),
-      method: 'GET',
-      headers: {'apiKey': AXONAUT_KEY}
+      hostname: 'app.axonaut.com', path: path, method: 'GET',
+      headers: { 'apiKey': AXONAUT_KEY }, family: 4, lookup: axonautLookup
     }, function(res) {
       var d = '';
       res.on('data', function(c){ d += c; });
       res.on('end', function(){
-        try {
-          var q = JSON.parse(d);
-          resolve(q.customer_portal_url || q.customerPortalUrl || q.portal_url || '');
-        } catch(e) { resolve(''); }
+        if (res.statusCode >= 400) return reject(new Error('Axonaut HTTP ' + res.statusCode));
+        resolve(d);
       });
     });
-    req.on('error', function(e){ console.log('getAxonautQuotationUrl error:', e.message); resolve(''); });
-    req.setTimeout(8000, function(){ req.destroy(); resolve(''); });
+    req.on('error', reject);
+    req.setTimeout(10000, function(){ req.destroy(new Error('Axonaut : délai dépassé')); });
     req.end();
+  }).catch(function(e) {
+    var reseau = /ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNRESET|délai/.test(e.message);
+    if (reseau && tentative < 3) {
+      axonautIp = { ip: null, at: 0 };   // on force une nouvelle résolution
+      var delai = tentative * 1500;
+      console.log('Axonaut ' + path + ' : ' + e.message + ' — nouvelle tentative dans ' + (delai/1000) + 's (' + tentative + '/3)');
+      return new Promise(function(r){ setTimeout(r, delai); }).then(function(){ return axonautGet(path, tentative + 1); });
+    }
+    throw e;
   });
+}
+
+// Récupère l'URL client d'un devis précis sur l'API Axonaut
+function getAxonautQuotationUrl(quotationId) {
+  if (!quotationId) return Promise.resolve('');
+  return axonautGet('/api/v1/quotations/' + encodeURIComponent(quotationId)).then(function(d) {
+    var q = JSON.parse(d);
+    return q.customer_portal_url || q.customerPortalUrl || q.portal_url || '';
+  }).catch(function(e) { console.log('getAxonautQuotationUrl : ' + e.message); return ''; });
 }
 
 // Récupérer les infos complètes d'un prospect Axonaut (pour création manuelle de devis)
@@ -761,7 +799,7 @@ function getAxonautCompanyInfo(companyId) {
   if (!companyId) return Promise.resolve(null);
   return new Promise(function(resolve) {
     var options = {
-      hostname: 'app.axonaut.com',
+      hostname: 'app.axonaut.com', family: 4, lookup: axonautLookup,
       path: '/api/v1/companies/' + companyId,
       method: 'GET',
       headers: {'apiKey': AXONAUT_KEY}
@@ -2615,7 +2653,7 @@ var server = http.createServer(function(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET');
     var options = {
-      hostname: 'app.axonaut.com',
+      hostname: 'app.axonaut.com', family: 4, lookup: axonautLookup,
       path: '/api/v1/quotations?limit=200',
       method: 'GET',
       headers: { 'apiKey': AXONAUT_KEY }
@@ -3056,7 +3094,7 @@ var server = http.createServer(function(req, res) {
   // ═══ SYNC MONTANTS ═══
   if (req.url === '/sync-montants' && req.method === 'GET') {
     res.setHeader('Access-Control-Allow-Origin','*');
-    var axS={hostname:'app.axonaut.com',path:'/api/v1/quotations?limit=200',method:'GET',headers:{'apiKey':AXONAUT_KEY}};
+    var axS={hostname:'app.axonaut.com',family:4,lookup:axonautLookup,path:'/api/v1/quotations?limit=200',method:'GET',headers:{'apiKey':AXONAUT_KEY}};
     https.request(axS,function(aRes){
       var d=''; aRes.on('data',function(c){d+=c;}); aRes.on('end',function(){
         try{
@@ -3378,7 +3416,7 @@ function recoverMissingDevisUrl(attempt) {
   console.log('Récupération devisUrl manquants... (tentative ' + attempt + '/4)');
   // Récupérer les devis Axonaut récents (dernières 48h)
   var axOpts = {
-    hostname: 'app.axonaut.com',
+    hostname: 'app.axonaut.com', family: 4, lookup: axonautLookup,
     path: '/api/v1/quotations?limit=50',
     method: 'GET',
     headers: { 'apiKey': AXONAUT_KEY }
