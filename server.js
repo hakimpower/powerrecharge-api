@@ -1859,8 +1859,12 @@ var server = http.createServer(function(req, res) {
         }
         // Extraire le numéro de devis (ex: "Devis N°935")
         var evRef = '';
-        var refMatch = evTitle.match(/[Nn]°\s*(\d+)/);
-        if (refMatch) evRef = '#' + refMatch[1];
+        var refMatch = evTitle.match(/[Nn]°\s*#?(\d+)/);
+        if (refMatch) evRef = 'AX-#' + refMatch[1];
+        // Extraire le lien du devis présent dans le mail (bouton « signer en ligne »)
+        var evUrl = '';
+        var urlMatch = evContent.match(/https?:\/\/(?:www\.)?axonaut\.com\/[^"'\s<>\\]+/i);
+        if (urlMatch) evUrl = urlMatch[0].replace(/&amp;/g, '&').replace(/[.,)]+$/, '');
 
         if (!evCompanyId) {
           console.log('event.created: pas de company_id, ignoré');
@@ -1882,8 +1886,17 @@ var server = http.createServer(function(req, res) {
           var fsStatut = fsData.statut && fsData.statut.stringValue ? fsData.statut.stringValue : (fsData.statut || '');
           var statutsAvances = ['devis_envoye','new','devis_signe','affected','accepted','rdv','progress','done','sav','cloture'];
           var fsUpdate = { updatedAt: new Date().toISOString() };
-          if (evMontant > 0) fsUpdate.montant = evMontant;
-          if (evRef) fsUpdate.ref = evRef;
+          var montantExistant = Number(fsData.montant && fsData.montant.doubleValue !== undefined ? fsData.montant.doubleValue
+                                     : fsData.montant && fsData.montant.integerValue !== undefined ? fsData.montant.integerValue
+                                     : (fsData.montant && fsData.montant.stringValue) || fsData.montant || 0);
+          // Le montant du mail peut être un reste à charge : il ne remplace pas celui du devis Axonaut
+          if (evMontant > 0 && !montantExistant) fsUpdate.montant = evMontant;
+          else if (evMontant > 0 && Math.abs(evMontant - montantExistant) > 1) {
+            console.log('event : montant du mail (' + evMontant + ') ignoré, devis Axonaut = ' + montantExistant);
+          }
+          if (evRef && !(fsData.ref && (fsData.ref.stringValue || '').indexOf('AX-') === 0)) fsUpdate.ref = evRef;
+          var urlExistante = (fsData.devisUrl && fsData.devisUrl.stringValue) || '';
+          if (evUrl && !urlExistante) { fsUpdate.devisUrl = evUrl; console.log('event : lien du devis récupéré →', evUrl); }
           // Passer en devis_envoye si statut vide ou pas encore avancé
           if (!fsStatut || statutsAvances.indexOf(fsStatut) === -1) {
             fsUpdate.statut = 'devis_envoye';
