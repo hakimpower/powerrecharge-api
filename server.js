@@ -3346,6 +3346,7 @@ var server = http.createServer(function(req, res) {
         var tickets  = results[1] || [];
         // Compléter chaque demande avec le devis de son dossier
         return Promise.all(demandes.map(function(dem) {
+          if (dem.devisPdfData) { delete dem.devisPdfData; dem.devisPdfDispo = true; }  // trop lourd : servi par /collab-devis
           if (!dem.dossierId) return Promise.resolve(dem);
           return firestoreGetIn('dossiers', dem.dossierId).then(function(doc) {
             if (doc && doc.data) {
@@ -3399,6 +3400,29 @@ var server = http.createServer(function(req, res) {
         });
       }).catch(function(e) { res.writeHead(500); res.end(JSON.stringify({success: false, error: e.message})); });
     });
+    return;
+  }
+
+  // GET /collab-devis?token=...&demandeId=...  → renvoie le PDF stocké sur la demande
+  if (req.url.startsWith('/collab-devis') && req.method === 'GET') {
+    var qs = new URL('http://localhost' + req.url).searchParams;
+    var tokenDevis = qs.get('token'), demDevis = qs.get('demandeId');
+    collabFromToken(tokenDevis).then(function(collab) {
+      if (!collab || !demDevis) { res.writeHead(401); res.end('Non autorisé'); return; }
+      return firestoreGetIn('demandes', demDevis).then(function(doc) {
+        if (!doc || !doc.data) { res.writeHead(404); res.end('Devis introuvable'); return; }
+        if (doc.data.collaborateurId !== collab.id) { res.writeHead(403); res.end('Non autorisé'); return; }
+        var b64 = doc.data.devisPdfData || '';
+        if (!b64) { res.writeHead(404); res.end('Aucun devis'); return; }
+        var buf = Buffer.from(b64, 'base64');
+        res.writeHead(200, {
+          'Content-Type': 'application/pdf',
+          'Content-Length': buf.length,
+          'Content-Disposition': 'inline; filename="' + (doc.data.devisPdfNom || 'devis.pdf') + '"'
+        });
+        res.end(buf);
+      });
+    }).catch(function(e){ res.writeHead(500); res.end(e.message); });
     return;
   }
 
