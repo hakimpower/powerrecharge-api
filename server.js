@@ -603,6 +603,11 @@ function selectiveUpdate(existing, newData) {
 // toujours servies, jamais l'une à la place de l'autre.
 // ════════════════════════════════════════════════════════════════
 var STATUTS_AVANCES = ['devis_envoye','new','devis_signe','affected','accepted','rdv','progress','done','sav','cloture'];
+var MAP_STATUT_DEMANDE = {
+  lead:'en_attente', prospect:'en_attente', devis_envoye:'devis_envoye',
+  new:'planifie', devis_signe:'planifie', affected:'planifie', accepted:'planifie', rdv:'planifie',
+  progress:'en_cours', done:'termine', sav:'termine', cloture:'cloture'
+};
 var SOURCES_PROTEGEES = ['facebook','Facebook Lead Ads','facebook_lead','google','google_ads'];
 
 // Lit un champ Firestore quel que soit son format (REST ou objet simple)
@@ -687,6 +692,14 @@ function syncDossier(opts) {
     upd.updatedAt = new Date().toISOString();
     return firestoreUpdate(fsDoc.doc.id, upd).then(function(){
       etat.fs = 'mis à jour (' + fsDoc.doc.id + ', par ' + fsDoc.field + ')';
+      // Dossier partenaire : la demande du collaborateur suit le statut du dossier
+      var demandeId = fsVal(data, 'demandeId');
+      if (!demandeId || !upd.statut) return;
+      var cible = MAP_STATUT_DEMANDE[upd.statut];
+      if (!cible) return;
+      return firestoreUpdateIn('demandes', demandeId, { statut: cible, updatedAt: upd.updatedAt })
+        .then(function(){ console.log('Partenaire : demande ' + demandeId + ' → ' + cible); })
+        .catch(function(e){ console.log('maj demande : ' + e.message); });
     });
   }).catch(function(e){ etat.fs = 'erreur (' + e.message + ')'; });
 
