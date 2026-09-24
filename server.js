@@ -732,6 +732,67 @@ function getAxonautAddresses(companyId) {
 
 
 
+
+// ════════════════════════════════════════════════════════════════
+// RATTACHEMENT AUTOMATIQUE AUX DEMANDES PARTENAIRES
+// Un devis dont le téléphone correspond à une demande d'un
+// collaborateur bascule dans le Kanban partenaire, et la demande
+// du collaborateur passe en « devis envoyé ».
+// ════════════════════════════════════════════════════════════════
+function chercherDemandePartenaire(tel) {
+  var cible = normalizePhoneE164(tel);
+  if (!cible) return Promise.resolve(null);
+  return firestoreListIn('demandes').then(function(docs) {
+    var libre = null;
+    (docs || []).forEach(function(doc) {
+      var d = decodeFirestoreFields(doc.data);
+      if (libre) return;
+      if (d.statut === 'cloture' || d.dossierId) return;           // déjà rattachée ou clôturée
+      if (normalizePhoneE164(d.tel) !== cible) return;
+      libre = { id: doc.id, data: d };
+    });
+    return libre;
+  }).catch(function(e) { console.log('chercherDemandePartenaire : ' + e.message); return null; });
+}
+
+// Rattache un dossier Firestore à une demande partenaire
+function rattacherDossierPartenaire(dossierId, dossierData, demande) {
+  var now = new Date().toISOString();
+  var societe = demande.data.societe || '';
+  return firestoreUpdate(dossierId, {
+    collaborateurId: demande.data.collaborateurId || '',
+    collaborateurSociete: societe,
+    demandeId: demande.id,
+    partenaire: true,
+    rattacheLe: now,
+    updatedAt: now
+  }).then(function() {
+    var majDemande = { dossierId: dossierId, updatedAt: now };
+    if (['en_attente', 'devis_envoye'].indexOf(demande.data.statut) > -1) majDemande.statut = 'devis_envoye';
+    return firestoreUpdateIn('demandes', demande.id, majDemande);
+  }).then(function() {
+    console.log('Partenaire : dossier ' + dossierId + ' (' + (dossierData.client || '') + ') rattaché à ' + societe + ' — demande ' + demande.id + ' passée en devis envoyé');
+    return true;
+  }).catch(function(e) { console.error('rattacherDossierPartenaire : ' + e.message); return false; });
+}
+
+// Vérifie si un dossier correspond à une demande partenaire (appelé à l'arrivée d'un devis)
+function verifierRattachementPartenaire(companyId, email, nom) {
+  return trouverDossierFirestore(companyId ? String(companyId) : '', email || '', nom || '').then(function(fsDoc) {
+    if (!fsDoc || !fsDoc.doc) return null;
+    var data = fsDoc.doc.data || {};
+    if (fsVal(data, 'demandeId')) return null;                      // déjà rattaché
+    var tel = fsVal(data, 'tel');
+    if (!tel) return null;
+    return chercherDemandePartenaire(tel).then(function(demande) {
+      if (!demande) return null;
+      var simple = {};
+      Object.keys(data).forEach(function(k){ simple[k] = fsVal(data, k); });
+      return rattacherDossierPartenaire(fsDoc.doc.id, simple, demande);
+    });
+  }).catch(function(e) { console.log('verifierRattachementPartenaire : ' + e.message); return null; });
+}
+
 // ════════════════════════════════════════════════════════════════
 // RÉSOLUTION DNS ROBUSTE POUR AXONAUT
 // Render échoue régulièrement sur getaddrinfo ENOTFOUND app.axonaut.com.
@@ -1793,6 +1854,8 @@ var server = http.createServer(function(req, res) {
           }
           });
         }).then(function(etat){
+          return verifierRattachementPartenaire(companyId5, emailAxonaut, companyName5).then(function(){ return etat; });
+        }).then(function(etat){
           res.writeHead(200); res.end(JSON.stringify({success: true, etat: etat}));
         }).catch(function(e){
           console.error('quotation.created erreur:', e.message);
@@ -1904,6 +1967,8 @@ var server = http.createServer(function(req, res) {
           }
           return firestoreUpdate(fsDoc.id, fsUpdate).then(function() {
             console.log('event.created: Firestore mis à jour', fsDoc.id, JSON.stringify(fsUpdate));
+            return verifierRattachementPartenaire(evCompanyId, '', '');
+          }).then(function() {
             res.writeHead(200); res.end(JSON.stringify({success: true, action: 'updated'}));
           });
         }).catch(function(e) {
