@@ -1548,7 +1548,47 @@ function handleAgentRequest(req, res) {
         });
       }
 
-      // POST /agent/v1/prospects/:id/photos  { dataBase64, contentType, kind? }
+      // POST /agent/v1/demandes/:id/devis  { dataBase64, contentType, montant? }
+  if ((m = path.match(/^\/agent\/v1\/demandes\/([A-Za-z0-9_-]{6,40})\/devis$/)) && req.method === 'POST') {
+    var demandeId = m[1];
+    return parseBody(req).then(function(body) {
+      if (!agentBucket) return agentSend(res, 503, { error: 'Firebase Storage non configuré' });
+      var ct = String(body.contentType || 'application/pdf');
+      if (!/^application\/pdf$/.test(ct)) return agentSend(res, 400, { error: 'Le devis doit être un PDF' });
+      var buf = Buffer.from(String(body.dataBase64 || '').replace(/^data:[^,]+,/, ''), 'base64');
+      if (buf.length < 500) return agentSend(res, 400, { error: 'Fichier vide ou invalide' });
+      if (buf.length > 10 * 1024 * 1024) return agentSend(res, 413, { error: 'PDF trop lourd (10 Mo max)' });
+      return agentDb.collection('demandes').doc(demandeId).get().then(function(snap) {
+        if (!snap.exists) return agentSend(res, 404, { error: 'Demande introuvable' });
+        var dem = snap.data();
+        var nom = 'devis_' + demandeId + '_' + Date.now() + '.pdf';
+        var chemin = 'devis/' + nom;
+        var token = require('crypto').randomUUID();
+        return agentBucket.file(chemin).save(buf, { resumable: false, metadata: { contentType: ct, metadata: { firebaseStorageDownloadTokens: token } } })
+          .then(function() {
+            var url = 'https://firebasestorage.googleapis.com/v0/b/' + agentBucket.name + '/o/' + encodeURIComponent(chemin) + '?alt=media&token=' + token;
+            var maj = { devisPdfUrl: url, devisPdfAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+            if (body.montant) maj.devisMontant = Number(body.montant) || 0;
+            if (['en_attente'].indexOf(dem.statut) > -1) maj.statut = 'devis_envoye';
+            return agentDb.collection('demandes').doc(demandeId).update(maj).then(function() {
+              // Le dossier lié récupère le lien s'il n'en a pas
+              if (!dem.dossierId) return url;
+              return agentDb.collection('dossiers').doc(dem.dossierId).get().then(function(d2) {
+                if (d2.exists && !d2.data().devisUrl) {
+                  return agentDb.collection('dossiers').doc(dem.dossierId).update({ devisUrl: url, updatedAt: new Date().toISOString() });
+                }
+              }).then(function(){ return url; });
+            });
+          }).then(function(url) {
+            console.log('Devis PDF téléversé pour la demande', demandeId);
+            agentAudit(req, demandeId, 'devis-pdf', { taille: buf.length }, 'ok');
+            agentSend(res, 200, { success: true, url: url });
+          });
+      }).catch(function(e){ agentSend(res, 500, { error: e.message }); });
+    });
+  }
+
+  // POST /agent/v1/prospects/:id/photos  { dataBase64, contentType, kind? }
       if (sub === '/photos' && req.method === 'POST') {
         var ct = String(body.contentType || 'image/jpeg');
         if (!/^image\/(jpeg|png|webp)$/.test(ct)) return agentSend(res, 400, { error: 'Format accepté : jpeg, png ou webp' });
@@ -3304,8 +3344,27 @@ var server = http.createServer(function(req, res) {
       ]).then(function(results) {
         var demandes = results[0] || [];
         var tickets  = results[1] || [];
-        console.log('collab-dashboard:', collabId, '| demandes:', demandes.length, '| tickets:', tickets.length);
-        res.writeHead(200); res.end(JSON.stringify({success: true, demandes: demandes, tickets: tickets}));
+        // Compléter chaque demande avec le devis de son dossier
+        return Promise.all(demandes.map(function(dem) {
+          if (!dem.dossierId) return Promise.resolve(dem);
+          return firestoreGetIn('dossiers', dem.dossierId).then(function(doc) {
+            if (doc && doc.data) {
+              var dd = doc.data;
+              if (dd.devisUrl) dem.devisUrl = dd.devisUrl;
+              if (dd.montant)  dem.devisMontant = dd.montant;
+              if (dd.ref)      dem.devisRef = dd.ref;
+              if (dd.statut)   dem.statutDossier = dd.statut;
+            }
+            return dem;
+          }).catch(function(){ return dem; });
+        })).then(function(demandesCompletes) {
+          demandes = demandesCompletes;
+          return { demandes: demandes, tickets: tickets };
+        }).then(function(r) {
+          demandes = r.demandes; tickets = r.tickets;
+          console.log('collab-dashboard:', collabId, '| demandes:', demandes.length, '| tickets:', tickets.length);
+          res.writeHead(200); res.end(JSON.stringify({success: true, demandes: demandes, tickets: tickets}));
+        });
       });
     }).catch(function(e) { res.writeHead(500); res.end(JSON.stringify({success: false, error: e.message})); });
     return;
