@@ -3351,7 +3351,8 @@ var server = http.createServer(function(req, res) {
             if (doc && doc.data) {
               var dd = doc.data;
               if (dd.devisUrl) dem.devisUrl = dd.devisUrl;
-              if (dd.montant)  dem.devisMontant = dd.montant;
+              if (dd.montant)  dem.devisMontant = dd.montant;   // le devis Axonaut fait foi
+              else if (dem.devisMontant) dem.devisMontant = dem.devisMontant;
               if (dd.ref)      dem.devisRef = dd.ref;
               if (dd.statut)   dem.statutDossier = dd.statut;
             }
