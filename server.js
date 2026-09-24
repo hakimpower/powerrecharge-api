@@ -605,7 +605,7 @@ function selectiveUpdate(existing, newData) {
 var STATUTS_AVANCES = ['devis_envoye','new','devis_signe','affected','accepted','rdv','progress','done','sav','cloture'];
 var MAP_STATUT_DEMANDE = {
   lead:'en_attente', prospect:'en_attente', devis_envoye:'devis_envoye',
-  new:'planifie', devis_signe:'planifie', affected:'planifie', accepted:'planifie', rdv:'planifie',
+  new:'devis_signe', devis_signe:'devis_signe', affected:'planifie', accepted:'planifie', rdv:'planifie',
   progress:'en_cours', done:'termine', sav:'termine', cloture:'cloture'
 };
 var SOURCES_PROTEGEES = ['facebook','Facebook Lead Ads','facebook_lead','google','google_ads'];
