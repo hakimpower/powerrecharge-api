@@ -768,6 +768,39 @@ function chercherDemandePartenaire(tel) {
   }).catch(function(e) { console.log('chercherDemandePartenaire : ' + e.message); return null; });
 }
 
+
+// Recopie les photos du partenaire dans l'onglet « Photos Client » du dossier
+function copierPhotosVersDossier(demandeId, dossierId) {
+  if (!agentDb || !demandeId || !dossierId) return Promise.resolve(0);
+  return agentDb.collection('demande_photos').where('demandeId', '==', demandeId).get().then(function(snap) {
+    if (snap.empty) return 0;
+    var cible = agentDb.collection('dossiers').doc(dossierId).collection('client_photos');
+    var lot = agentDb.batch(), n = 0;
+    snap.forEach(function(doc) {
+      var p = doc.data();
+      var url = p.url || (p.data ? 'data:' + (p.contentType || 'image/jpeg') + ';base64,' + p.data : '');
+      if (!url) return;
+      lot.set(cible.doc('part_' + doc.id), {
+        url: url,
+        label: 'Partenaire — ' + (p.nom || 'photo'),
+        photoId: 'part_' + doc.id,
+        type: p.url ? 'storage' : 'base64',
+        source: 'partenaire',
+        uploadedAt: p.at || new Date().toISOString()
+      });
+      n++;
+    });
+    if (!n) return 0;
+    return lot.commit().then(function() {
+      return cible.get().then(function(all) {
+        return agentDb.collection('dossiers').doc(dossierId).update({
+          clientPhotosCount: all.size, clientPhotosComplete: all.size >= 4, updatedAt: new Date().toISOString()
+        });
+      });
+    }).then(function() { console.log('Partenaire : ' + n + ' photo(s) copiée(s) vers le dossier ' + dossierId); return n; });
+  }).catch(function(e) { console.log('copierPhotosVersDossier : ' + e.message); return 0; });
+}
+
 // Rattache un dossier Firestore à une demande partenaire
 function rattacherDossierPartenaire(dossierId, dossierData, demande) {
   var now = new Date().toISOString();
@@ -783,6 +816,8 @@ function rattacherDossierPartenaire(dossierId, dossierData, demande) {
     var majDemande = { dossierId: dossierId, updatedAt: now };
     if (['en_attente', 'devis_envoye'].indexOf(demande.data.statut) > -1) majDemande.statut = 'devis_envoye';
     return firestoreUpdateIn('demandes', demande.id, majDemande);
+  }).then(function() {
+    return copierPhotosVersDossier(demande.id, dossierId);
   }).then(function() {
     console.log('Partenaire : dossier ' + dossierId + ' (' + (dossierData.client || '') + ') rattaché à ' + societe + ' — demande ' + demande.id + ' passée en devis envoyé');
     return true;
@@ -3345,8 +3380,21 @@ var server = http.createServer(function(req, res) {
         var demandes = results[0] || [];
         var tickets  = results[1] || [];
         // Compléter chaque demande avec le devis de son dossier
-        return Promise.all(demandes.map(function(dem) {
+        // Photos du collaborateur, sans les données binaires
+        var photosParCible = {};
+        var pPhotos = agentDb
+          ? agentDb.collection('demande_photos').where('collaborateurId', '==', collabId).get().then(function(snap) {
+              snap.forEach(function(doc) {
+                var p = doc.data(), cle = p.demandeId || p.ticketId;
+                if (!cle) return;
+                (photosParCible[cle] = photosParCible[cle] || []).push({ id: doc.id, url: p.url || null, nom: p.nom || '', at: p.at || '' });
+              });
+            }).catch(function(e){ console.log('photos : ' + e.message); })
+          : Promise.resolve();
+
+        return pPhotos.then(function(){ return Promise.all(demandes.map(function(dem) {
           if (dem.devisPdfData) { delete dem.devisPdfData; dem.devisPdfDispo = true; }  // trop lourd : servi par /collab-devis
+          dem.photos = (photosParCible[dem.id] || []);
           if (!dem.dossierId) return Promise.resolve(dem);
           return firestoreGetIn('dossiers', dem.dossierId).then(function(doc) {
             if (doc && doc.data) {
@@ -3359,8 +3407,9 @@ var server = http.createServer(function(req, res) {
             }
             return dem;
           }).catch(function(){ return dem; });
-        })).then(function(demandesCompletes) {
+        })); }).then(function(demandesCompletes) {
           demandes = demandesCompletes;
+          tickets.forEach(function(tk){ tk.photos = photosParCible[tk.id] || []; });
           return { demandes: demandes, tickets: tickets };
         }).then(function(r) {
           demandes = r.demandes; tickets = r.tickets;
@@ -3400,6 +3449,66 @@ var server = http.createServer(function(req, res) {
         });
       }).catch(function(e) { res.writeHead(500); res.end(JSON.stringify({success: false, error: e.message})); });
     });
+    return;
+  }
+
+
+  // ── PHOTOS DES DEMANDES ET TICKETS (espace collaborateur) ──
+  // POST /collab-photo  { token, demandeId|ticketId, dataBase64, contentType, nom }
+  if (req.url === '/collab-photo' && req.method === 'POST') {
+    parseBody(req).then(function(body) {
+      collabFromToken(body.token || '').then(function(collab) {
+        if (!collab) { res.writeHead(401); res.end(JSON.stringify({success:false, error:'Session invalide'})); return; }
+        if (!agentDb) { res.writeHead(503); res.end(JSON.stringify({success:false, error:'Service photos indisponible'})); return; }
+        var ct = String(body.contentType || 'image/jpeg');
+        if (!/^image\/(jpeg|png|webp)$/.test(ct)) { res.writeHead(400); res.end(JSON.stringify({success:false, error:'Format accepté : jpeg, png, webp'})); return; }
+        var buf = Buffer.from(String(body.dataBase64 || '').replace(/^data:[^,]+,/, ''), 'base64');
+        if (buf.length < 500)            { res.writeHead(400); res.end(JSON.stringify({success:false, error:'Image vide'})); return; }
+        if (buf.length > 900 * 1024)     { res.writeHead(413); res.end(JSON.stringify({success:false, error:'Image trop lourde (900 Ko max)'})); return; }
+        var cible = body.demandeId ? {champ:'demandeId', id:String(body.demandeId)} : (body.ticketId ? {champ:'ticketId', id:String(body.ticketId)} : null);
+        if (!cible) { res.writeHead(400); res.end(JSON.stringify({success:false, error:'demandeId ou ticketId requis'})); return; }
+
+        var doc = { collaborateurId: collab.id, nom: String(body.nom || 'photo.jpg').slice(0,80),
+                    contentType: ct, taille: buf.length, at: new Date().toISOString() };
+        doc[cible.champ] = cible.id;
+
+        // Firebase Storage si disponible, sinon stockage direct dans Firestore
+        var prep = Promise.resolve();
+        if (agentBucket) {
+          var chemin = 'collab/' + cible.id + '_' + Date.now() + '.' + (/png/.test(ct) ? 'png' : 'jpg');
+          var token = require('crypto').randomUUID();
+          prep = agentBucket.file(chemin).save(buf, { resumable:false, metadata:{ contentType: ct, metadata:{ firebaseStorageDownloadTokens: token } } })
+            .then(function(){ doc.url = 'https://firebasestorage.googleapis.com/v0/b/' + agentBucket.name + '/o/' + encodeURIComponent(chemin) + '?alt=media&token=' + token; })
+            .catch(function(e){ console.log('Storage indisponible, repli Firestore :', e.message); doc.data = buf.toString('base64'); });
+        } else {
+          doc.data = buf.toString('base64');
+        }
+
+        prep.then(function(){ return agentDb.collection('demande_photos').add(doc); })
+          .then(function(ref){
+            console.log('Photo collaborateur enregistrée :', ref.id, cible.champ, cible.id);
+            res.writeHead(200); res.end(JSON.stringify({success:true, id:ref.id, url: doc.url || null}));
+          }).catch(function(e){ res.writeHead(500); res.end(JSON.stringify({success:false, error:e.message})); });
+      }).catch(function(e){ res.writeHead(500); res.end(JSON.stringify({success:false, error:e.message})); });
+    });
+    return;
+  }
+
+  // GET /collab-photo?token=...&id=...  → renvoie l'image stockée dans Firestore
+  if (req.url.startsWith('/collab-photo') && req.method === 'GET') {
+    var qsP = new URL('http://localhost' + req.url).searchParams;
+    collabFromToken(qsP.get('token') || '').then(function(collab) {
+      if (!collab || !agentDb) { res.writeHead(401); res.end('Non autorisé'); return; }
+      return agentDb.collection('demande_photos').doc(qsP.get('id') || '-').get().then(function(snap) {
+        if (!snap.exists) { res.writeHead(404); res.end('Photo introuvable'); return; }
+        var p = snap.data();
+        if (p.collaborateurId !== collab.id) { res.writeHead(403); res.end('Non autorisé'); return; }
+        if (p.url) { res.writeHead(302, {Location: p.url}); res.end(); return; }
+        var img = Buffer.from(p.data || '', 'base64');
+        res.writeHead(200, {'Content-Type': p.contentType || 'image/jpeg', 'Content-Length': img.length, 'Cache-Control': 'private, max-age=3600'});
+        res.end(img);
+      });
+    }).catch(function(e){ res.writeHead(500); res.end(e.message); });
     return;
   }
 
