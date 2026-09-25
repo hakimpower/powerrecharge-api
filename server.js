@@ -597,6 +597,80 @@ function selectiveUpdate(existing, newData) {
 
 
 
+
+
+// Retrouve une mission Ekwateur quelle que soit l'écriture de son identifiant
+function trouverMissionEkwateur(id) {
+  var essais = variantesIdEkwateur(id);
+  return essais.reduce(function(chaine, variante) {
+    return chaine.then(function(trouve) {
+      if (trouve) return trouve;
+      return firestoreQueryIn('ekwateur_dossiers', 'idEkwateur', variante);
+    });
+  }, Promise.resolve(null));
+}
+
+// ── Mails Ekwateur : normalisation et nettoyage ──────────────────────
+// DIB-22087, DIB000024514, dib 24514 → tous ramenés à DIB-22087 / DIB-24514
+function normaliserIdEkwateur(txt) {
+  if (!txt) return '';
+  var m = String(txt).match(/DIB[\s\-_.]*0*(\d+)/i);
+  return m ? 'DIB-' + m[1] : '';
+}
+// Les variantes possibles d'un même identifiant, pour retrouver les anciens dossiers
+function variantesIdEkwateur(id) {
+  var n = String(id || '').replace(/[^0-9]/g, '');
+  if (!n) return [id];
+  var v = ['DIB-' + n, 'DIB' + n, 'DIB ' + n];
+  [8, 9, 10, 11, 12].forEach(function(taille){
+    if (n.length >= taille) return;
+    var p = n.padStart(taille, '0');
+    v.push('DIB' + p, 'DIB-' + p);
+  });
+  return v.filter(function(x, i){ return v.indexOf(x) === i; }).slice(0, 14);
+}
+// Corps du mail en texte lisible : balises converties, entités décodées
+function mailEnTexte(html) {
+  if (!html) return '';
+  return String(html)
+    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
+    .replace(/<\/\s*(p|div|tr|li|h\d)\s*>/gi, '\n')
+    .replace(/<\s*(td|th)\s*[^>]*>/gi, ' ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"').replace(/&#39;|&apos;|&rsquo;/gi, "'").replace(/&euro;/gi, '€')
+    .replace(/[\u2018\u2019\u02bc]/g, "'")
+    .replace(/&#(\d+);/g, function(_, n){ try { return String.fromCharCode(n); } catch(e) { return ' '; } })
+    .replace(/[ \t\u00a0]+/g, ' ')
+    .replace(/\n{2,}/g, '\n')
+    .trim();
+}
+// Libellés connus des mails Ekwateur : servent de bornes d'arrêt entre deux champs
+var LABELS_EKW = ['Nom','Prénom','Prenom','Mail','E-mail','Email','Tél','Tel','Téléphone','Telephone','Adresse','Logement',
+  'Type de logement','Type d\'installation','Puissance souscrite','Emplacement tableau','Emplacement souhaité','Emplacement souhaite',
+  'Distance estimée','Distance estimee','Nombre de murs','Installation de la borne','Liste des produits',
+  'Indications particulières','Indications particulieres','ID Ekwateur','Identifiant','Référence','Reference','Commentaire','Commentaires'];
+
+// Insère un saut de ligne devant chaque libellé connu : indispensable quand le mail
+// arrive sur une seule ligne (« SpieziaMail: ... »). Les libellés les plus longs sont
+// traités en premier pour que « Prénom: » ne soit pas coupé en « Pré » + « nom: ».
+function echapperRegex(x){ return String(x).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+// « Type d'installation », « Type d installation », « Type d’installation » : même libellé
+function motifLabel(label){ return echapperRegex(label).replace(/'/g, "['\u2019\u02bc ]?\\s*"); }
+function decouperChampsEkw(txt){
+  var labels = LABELS_EKW.slice().sort(function(a, b){ return b.length - a.length; }).map(motifLabel);
+  var re = new RegExp('(' + labels.join('|') + ')\\s*:', 'gi');
+  return String(txt || '').replace(re, function(m){ return '\n' + m; });
+}
+
+// Extrait un champ, une fois le mail découpé ligne par ligne
+function champEkwateur(content, label) {
+  var txt = decouperChampsEkw(content);
+  var re = new RegExp('^[\\s>•\\-]*' + motifLabel(label) + '\\s*:\\s*(.+)$', 'im');
+  var m = txt.match(re);
+  return m ? m[1].trim().replace(/[;,]+$/, '') : '';
+}
+
 // ════════════════════════════════════════════════════════════════
 // SYNCHRONISATION UNIQUE RDB + FIRESTORE
 // Tous les webhooks Axonaut passent par ici : les deux bases sont
@@ -2364,8 +2438,8 @@ var server = http.createServer(function(req, res) {
   // ============================================================
   if (req.url === '/ekwateur-webhook' && req.method === 'POST') {
     parseBody(req).then(function(body) {
-      var subject = body.subject || body.objet || '';
-      var content = body.body || body.body_plain || body.content || body.text || '';
+      var subject = mailEnTexte(body.subject || body.objet || '');
+      var content = mailEnTexte(body.body_plain || body.body || body.content || body.text || '');
       console.log('Ekwateur mail recu — sujet:', subject);
 
       // ─── Detection du type de mail ───
@@ -2375,19 +2449,16 @@ var server = http.createServer(function(req, res) {
       var isRapportInstall   = /rapport installation/i.test(subject);
 
       // ─── Extraction ID Ekwateur (toujours present sous une forme ou une autre) ───
-      var idMatch = (subject + ' ' + content).match(/DIB-\d+/i);
-      var idEkwateur = idMatch ? idMatch[0].toUpperCase() : '';
+      var idEkwateur = normaliserIdEkwateur(subject + ' ' + content);
       if (!idEkwateur) {
-        console.log('Ekwateur: ID introuvable, mail ignore. Sujet:', subject);
-        res.writeHead(200); res.end(JSON.stringify({success: false, reason: 'id_introuvable'}));
+        console.log('Ekwateur: ID introuvable, mail a traiter manuellement.');
+        console.log('  Sujet   :', subject);
+        console.log('  Extrait :', content.slice(0, 400).replace(/\n/g, ' | '));
+        res.writeHead(200); res.end(JSON.stringify({success: false, reason: 'id_introuvable', sujet: subject}));
         return;
       }
 
-      function field(label) {
-        var re = new RegExp(label + '\\s*:\\s*([^\\n\\r]+)', 'i');
-        var m = content.match(re);
-        return m ? m[1].trim() : '';
-      }
+      function field(label) { return champEkwateur(content, label); }
 
       // ═══ 1. DEMANDE D'INSTALLATION ═══
       if (isDemandeInstall) {
@@ -2413,7 +2484,7 @@ var server = http.createServer(function(req, res) {
           createdAt:     new Date().toISOString(),
           updatedAt:     new Date().toISOString()
         };
-        firestoreQueryIn('ekwateur_dossiers', 'idEkwateur', idEkwateur).then(function(existing) {
+        trouverMissionEkwateur(idEkwateur).then(function(existing) {
           if (existing) {
             console.log('Ekwateur installation deja existante:', idEkwateur);
             res.writeHead(200); res.end(JSON.stringify({success: true, action: 'already_exists'}));
@@ -2455,7 +2526,7 @@ var server = http.createServer(function(req, res) {
           createdAt:     new Date().toISOString(),
           updatedAt:     new Date().toISOString()
         };
-        firestoreQueryIn('ekwateur_dossiers', 'idEkwateur', idEkwateur).then(function(existing) {
+        trouverMissionEkwateur(idEkwateur).then(function(existing) {
           if (existing) {
             console.log('Ekwateur previsite deja existante:', idEkwateur);
             res.writeHead(200); res.end(JSON.stringify({success: true, action: 'already_exists'}));
@@ -2483,7 +2554,7 @@ var server = http.createServer(function(req, res) {
         var rdvAdresse = rdvMatch[1].trim();
         var rdvDate    = rdvMatch[2];
         var rdvHeure   = rdvMatch[3].replace('h', ':');
-        firestoreQueryIn('ekwateur_dossiers', 'idEkwateur', idEkwateur).then(function(existing) {
+        trouverMissionEkwateur(idEkwateur).then(function(existing) {
           if (!existing) {
             console.log('Ekwateur confirmation RDV: dossier introuvable pour', idEkwateur);
             res.writeHead(200); res.end(JSON.stringify({success: false, reason: 'dossier_introuvable'}));
@@ -2510,7 +2581,7 @@ var server = http.createServer(function(req, res) {
         var rapMatch = content.match(/réalisée le\s*(\d{2}\/\d{2}\/\d{4})\s+(\d{1,2}[:h]\d{2})\s+chez\s+(.+?)\s+à\s+(.+?)\./i)
                     || content.match(/realisee le\s*(\d{2}\/\d{2}\/\d{4})\s+(\d{1,2}[:h]\d{2})\s+chez\s+(.+?)\s+a\s+(.+?)\./i);
         var attachmentUrl = body.attachment_url || body.pdf_url || body.file_url || '';
-        firestoreQueryIn('ekwateur_dossiers', 'idEkwateur', idEkwateur).then(function(existing) {
+        trouverMissionEkwateur(idEkwateur).then(function(existing) {
           if (!existing) {
             console.log('Ekwateur rapport: dossier introuvable pour', idEkwateur);
             res.writeHead(200); res.end(JSON.stringify({success: false, reason: 'dossier_introuvable'}));
